@@ -115,21 +115,10 @@ func TestObjectIDEncoding(t *testing.T) {
 	id := randID(t)
 
 	t.Run("binary", func(t *testing.T) {
-		data, err := id.Marshal()
-		require.NoError(t, err)
+		data := id.Marshal()
 
 		var id2 ID
 		require.NoError(t, id2.Unmarshal(data))
-
-		require.Equal(t, id, id2)
-	})
-
-	t.Run("json", func(t *testing.T) {
-		data, err := id.MarshalJSON()
-		require.NoError(t, err)
-
-		var id2 ID
-		require.NoError(t, id2.UnmarshalJSON(data))
 
 		require.Equal(t, id, id2)
 	})

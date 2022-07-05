@@ -1,122 +1,105 @@
 package object
 
 import (
+	"errors"
+	"fmt"
+
+	v2object "github.com/nspcc-dev/neofs-api-go/v2/object"
 	"github.com/nspcc-dev/neofs-api-go/v2/refs"
 	"github.com/nspcc-dev/neofs-api-go/v2/tombstone"
 	oid "github.com/nspcc-dev/neofs-sdk-go/object/id"
 )
 
-// Tombstone represents v2-compatible tombstone structure.
-type Tombstone tombstone.Tombstone
-
-// NewTombstoneFromV2 wraps v2 Tombstone message to Tombstone.
-//
-// Nil tombstone.Tombstone converts to nil.
-func NewTombstoneFromV2(tV2 *tombstone.Tombstone) *Tombstone {
-	return (*Tombstone)(tV2)
+// TODO: add docs
+type Tombstone struct {
+	members []oid.ID
 }
 
-// NewTombstone creates and initializes blank Tombstone.
-//
-// Defaults:
-//  - exp: 0;
-//  - splitID: nil;
-//  - members: nil.
-func NewTombstone() *Tombstone {
-	return NewTombstoneFromV2(new(tombstone.Tombstone))
-}
-
-// ToV2 converts Tombstone to v2 Tombstone message.
-//
-// Nil Tombstone converts to nil.
-func (t *Tombstone) ToV2() *tombstone.Tombstone {
-	return (*tombstone.Tombstone)(t)
-}
-
-// ExpirationEpoch return number of tombstone expiration epoch.
-func (t *Tombstone) ExpirationEpoch() uint64 {
-	return (*tombstone.Tombstone)(t).GetExpirationEpoch()
-}
-
-// SetExpirationEpoch sets number of tombstone expiration epoch.
-func (t *Tombstone) SetExpirationEpoch(v uint64) {
-	(*tombstone.Tombstone)(t).SetExpirationEpoch(v)
-}
-
-// SplitID returns identifier of object split hierarchy.
-func (t *Tombstone) SplitID() *SplitID {
-	return NewSplitIDFromV2(
-		(*tombstone.Tombstone)(t).GetSplitID())
-}
-
-// SetSplitID sets identifier of object split hierarchy.
-func (t *Tombstone) SetSplitID(v *SplitID) {
-	(*tombstone.Tombstone)(t).SetSplitID(v.ToV2())
-}
-
-// Members returns list of objects to be deleted.
-func (t *Tombstone) Members() []oid.ID {
-	v2 := (*tombstone.Tombstone)(t)
-	msV2 := v2.GetMembers()
-
-	if msV2 == nil {
-		return nil
+// TODO: add docs
+func (x *Object) WriteTombstone(t Tombstone) {
+	if len(t.Members()) == 0 {
+		panic("missing members")
 	}
 
-	var (
-		ms = make([]oid.ID, len(msV2))
-		id oid.ID
-	)
-
-	for i := range msV2 {
-		_ = id.ReadFromV2(msV2[i])
-		ms[i] = id
-	}
-
-	return ms
+	x.hdr.SetObjectType(v2object.TypeTombstone)
+	x.payload = t.Marshal()
+	x.hdr.SetPayloadLength(uint64(len(x.payload)))
 }
 
-// SetMembers sets list of objects to be deleted.
-func (t *Tombstone) SetMembers(v []oid.ID) {
-	var ms []refs.ObjectID
+// TODO: add docs
+func (x Object) IsTombstone() bool {
+	return x.hdr.GetObjectType() == v2object.TypeTombstone
+}
 
-	if v != nil {
-		ms = (*tombstone.Tombstone)(t).
-			GetMembers()
+// TODO: add docs
+func (x Object) ReadTombstone(t *Tombstone) error {
+	err := t.Unmarshal(x.payload)
+	if err != nil {
+		return fmt.Errorf("decode payload: %w", err)
+	}
 
-		if ln := len(v); cap(ms) >= ln {
-			ms = ms[:0]
-		} else {
-			ms = make([]refs.ObjectID, 0, ln)
+	return nil
+}
+
+// TODO: check docs
+func (x Tombstone) Marshal() []byte {
+	members := make([]refs.ObjectID, len(x.members))
+
+	for i := range x.members {
+		x.members[i].WriteToV2(&members[i])
+	}
+
+	var m tombstone.Tombstone
+	m.SetMembers(members)
+
+	return m.StableMarshal(nil)
+}
+
+// TODO: add docs
+func (x *Tombstone) Unmarshal(data []byte) error {
+	var m tombstone.Tombstone
+
+	err := m.Unmarshal(data)
+	if err != nil {
+		return fmt.Errorf("decode binary: %w", err)
+	}
+
+	members := m.GetMembers()
+	if len(members) == 0 {
+		return errors.New("missing members")
+	}
+
+	x.members = make([]oid.ID, len(members))
+	mMembers := make(map[oid.ID]struct{}, len(members))
+	var exists bool
+
+	for i := range members {
+		err = x.members[i].ReadFromV2(members[i])
+		if err != nil {
+			return fmt.Errorf("invalid member: %w", err)
 		}
 
-		var idV2 refs.ObjectID
-
-		for i := range v {
-			v[i].WriteToV2(&idV2)
-			ms = append(ms, idV2)
+		_, exists = mMembers[x.members[i]]
+		if exists {
+			return fmt.Errorf("duplicated member %s", x.members[i])
 		}
+
+		mMembers[x.members[i]] = struct{}{}
 	}
 
-	(*tombstone.Tombstone)(t).SetMembers(ms)
+	if err != nil {
+		return fmt.Errorf("invalid member: %w", err)
+	}
+
+	return nil
 }
 
-// Marshal marshals Tombstone into a protobuf binary form.
-func (t *Tombstone) Marshal() ([]byte, error) {
-	return (*tombstone.Tombstone)(t).StableMarshal(nil), nil
+// TODO: check docs
+func (x *Tombstone) AppendMember(member oid.ID) {
+	x.members = append(x.members, member)
 }
 
-// Unmarshal unmarshals protobuf binary representation of Tombstone.
-func (t *Tombstone) Unmarshal(data []byte) error {
-	return (*tombstone.Tombstone)(t).Unmarshal(data)
-}
-
-// MarshalJSON encodes Tombstone to protobuf JSON format.
-func (t *Tombstone) MarshalJSON() ([]byte, error) {
-	return (*tombstone.Tombstone)(t).MarshalJSON()
-}
-
-// UnmarshalJSON decodes Tombstone from protobuf JSON format.
-func (t *Tombstone) UnmarshalJSON(data []byte) error {
-	return (*tombstone.Tombstone)(t).UnmarshalJSON(data)
+// TODO: check docs
+func (x Tombstone) Members() []oid.ID {
+	return x.members
 }

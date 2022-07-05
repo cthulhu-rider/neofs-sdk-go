@@ -1,14 +1,11 @@
 package oid
 
 import (
-	"crypto/ecdsa"
 	"crypto/sha256"
 	"fmt"
 
 	"github.com/mr-tron/base58"
 	"github.com/nspcc-dev/neofs-api-go/v2/refs"
-	neofscrypto "github.com/nspcc-dev/neofs-sdk-go/crypto"
-	neofsecdsa "github.com/nspcc-dev/neofs-sdk-go/crypto/ecdsa"
 )
 
 // ID represents NeoFS object identifier in a container.
@@ -115,50 +112,20 @@ func (id ID) String() string {
 	return id.EncodeToString()
 }
 
-// CalculateIDSignature signs object id with provided key.
-func (id ID) CalculateIDSignature(key ecdsa.PrivateKey) (neofscrypto.Signature, error) {
-	data, err := id.Marshal()
-	if err != nil {
-		return neofscrypto.Signature{}, fmt.Errorf("marshal ID: %w", err)
-	}
-
-	var sig neofscrypto.Signature
-
-	return sig, sig.Calculate(neofsecdsa.Signer(key), data)
-}
-
+// TODO: write proper docs
 // Marshal marshals ID into a protobuf binary form.
-func (id ID) Marshal() ([]byte, error) {
+func (id ID) Marshal() []byte {
 	var v2 refs.ObjectID
 	v2.SetValue(id[:])
 
-	return v2.StableMarshal(nil), nil
+	return v2.StableMarshal(nil)
 }
 
+// TODO: write proper docs
 // Unmarshal unmarshals protobuf binary representation of ID.
 func (id *ID) Unmarshal(data []byte) error {
 	var v2 refs.ObjectID
 	if err := v2.Unmarshal(data); err != nil {
-		return err
-	}
-
-	copy(id[:], v2.GetValue())
-
-	return nil
-}
-
-// MarshalJSON encodes ID to protobuf JSON format.
-func (id ID) MarshalJSON() ([]byte, error) {
-	var v2 refs.ObjectID
-	v2.SetValue(id[:])
-
-	return v2.MarshalJSON()
-}
-
-// UnmarshalJSON decodes ID from protobuf JSON format.
-func (id *ID) UnmarshalJSON(data []byte) error {
-	var v2 refs.ObjectID
-	if err := v2.UnmarshalJSON(data); err != nil {
 		return err
 	}
 

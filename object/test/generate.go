@@ -2,14 +2,12 @@ package objecttest
 
 import (
 	"github.com/google/uuid"
-	checksumtest "github.com/nspcc-dev/neofs-sdk-go/checksum/test"
 	cidtest "github.com/nspcc-dev/neofs-sdk-go/container/id/test"
 	"github.com/nspcc-dev/neofs-sdk-go/object"
 	oid "github.com/nspcc-dev/neofs-sdk-go/object/id"
 	oidtest "github.com/nspcc-dev/neofs-sdk-go/object/id/test"
 	sessiontest "github.com/nspcc-dev/neofs-sdk-go/session/test"
 	usertest "github.com/nspcc-dev/neofs-sdk-go/user/test"
-	"github.com/nspcc-dev/neofs-sdk-go/version"
 )
 
 // Range returns random object.Range.
@@ -41,42 +39,34 @@ func SplitID() *object.SplitID {
 	return x
 }
 
-func generate(withParent bool) *object.Object {
-	x := object.New()
-	ver := version.Current()
-
-	x.SetID(oidtest.ID())
-	x.SetSessionToken(sessiontest.Object())
-	x.SetPayload([]byte{1, 2, 3})
-	x.SetOwnerID(usertest.ID())
-	x.SetContainerID(cidtest.ID())
-	x.SetType(object.TypeTombstone)
-	x.SetVersion(&ver)
+func generate(withParent bool) (x object.Object) {
+	x.Init()
+	x.SetOwner(*usertest.ID())
+	// x.SetID(oidtest.ID())
+	x.MakeSession(*sessiontest.ObjectSigned())
+	// x.SetPayload([]byte{1, 2, 3})
+	// x.SetOwnerID(usertest.ID())
+	x.SetContainer(cidtest.ID())
+	// x.SetType(object.TypeTombstone)
 	x.SetPayloadSize(111)
 	x.SetCreationEpoch(222)
-	x.SetPreviousID(oidtest.ID())
-	x.SetParentID(oidtest.ID())
-	x.SetChildren(oidtest.ID(), oidtest.ID())
-	x.SetAttributes(*Attribute(), *Attribute())
-	x.SetSplitID(SplitID())
-	x.SetPayloadChecksum(checksumtest.Checksum())
-	x.SetPayloadHomomorphicHash(checksumtest.Checksum())
-
-	if withParent {
-		x.SetParent(generate(false))
-	}
+	// x.SetPreviousID(oidtest.ID())
+	// x.SetParentID(oidtest.ID())
+	// x.SetChildren(oidtest.ID(), oidtest.ID())
+	// x.SetAttributes(*Attribute(), *Attribute())
+	// x.SetSplitID(SplitID())
+	// x.SetPayloadChecksum(checksumtest.Checksum())
+	// x.SetPayloadHomomorphicHash(checksumtest.Checksum())
+	//
+	// if withParent {
+	// 	x.SetParent(generate(false))
+	// }
 
 	return x
 }
 
-// Raw returns random object.Object.
-// Deprecated: (v1.0.0) use Object instead.
-func Raw() *object.Object {
-	return Object()
-}
-
 // Object returns random object.Object.
-func Object() *object.Object {
+func Object() object.Object {
 	return generate(true)
 }
 
@@ -112,10 +102,11 @@ func SearchFilters() object.SearchFilters {
 	return x
 }
 
-// Lock returns random object.Lock.
-func Lock() *object.Lock {
-	var l object.Lock
-	l.WriteMembers([]oid.ID{oidtest.ID(), oidtest.ID()})
-
-	return &l
-}
+//
+// // Lock returns random object.Lock.
+// func Lock() *object.Lock {
+// 	var l object.Lock
+// 	l.WriteMembers([]oid.ID{oidtest.ID(), oidtest.ID()})
+//
+// 	return &l
+// }

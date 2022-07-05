@@ -142,7 +142,23 @@ func (x *ObjectReader) UseKey(key ecdsa.PrivateKey) {
 }
 
 func handleSplitInfo(ctx *contextCall, i *v2object.SplitInfo) {
-	ctx.err = object.NewSplitInfoError(object.NewSplitInfoFromV2(i))
+	if i == nil {
+		ctx.err = errors.New("empty split info")
+		return
+	}
+
+	var info object.SplitInfo
+
+	ctx.err = info.ReadFromV2(*i)
+	if ctx.err != nil {
+		ctx.err = fmt.Errorf("invalid split info: %w", ctx.err)
+		return
+	}
+
+	var e object.ErrSplit
+	e.SetInfo(info)
+
+	ctx.err = e
 }
 
 // ReadHeader reads header of the object. Result means success.
@@ -173,7 +189,11 @@ func (x *ObjectReader) ReadHeader(dst *object.Object) bool {
 
 	x.remainingPayloadLen = int(objv2.GetHeader().GetPayloadLength())
 
-	*dst = *object.NewFromV2(&objv2) // need smth better
+	x.ctxCall.err = dst.ReadFromV2(objv2)
+	if x.ctxCall.err != nil {
+		x.ctxCall.err = fmt.Errorf("invalid heading part: %w", x.ctxCall.err)
+		return false
+	}
 
 	return true
 }
@@ -402,30 +422,12 @@ func (x *PrmObjectHead) UseKey(key ecdsa.PrivateKey) {
 type ResObjectHead struct {
 	statusRes
 
-	// requested object (response doesn't carry the ID)
-	idObj oid.ID
-
-	hdr *v2object.HeaderWithSignature
+	hdr object.Object
 }
 
-// ReadHeader reads header of the requested object.
-// Returns false if header is missing in the response (not read).
-func (x *ResObjectHead) ReadHeader(dst *object.Object) bool {
-	if x.hdr == nil {
-		return false
-	}
-
-	var objv2 v2object.Object
-
-	objv2.SetHeader(x.hdr.GetHeader())
-	objv2.SetSignature(x.hdr.GetSignature())
-
-	obj := object.NewFromV2(&objv2)
-	obj.SetID(x.idObj)
-
-	*dst = *obj
-
-	return true
+// Header returns header of the requested object.
+func (x ResObjectHead) Header() object.Object {
+	return x.hdr
 }
 
 // ObjectHead reads object header through a remote server using NeoFS API protocol.
@@ -495,8 +497,6 @@ func (c *Client) ObjectHead(ctx context.Context, prm PrmObjectHead) (*ResObjectH
 		res ResObjectHead
 	)
 
-	res.idObj = prm.objID
-
 	if prm.keySet {
 		c.initCallContextWithoutKey(&cc)
 		cc.key = prm.key
@@ -516,7 +516,32 @@ func (c *Client) ObjectHead(ctx context.Context, prm PrmObjectHead) (*ResObjectH
 		case *v2object.SplitInfo:
 			handleSplitInfo(&cc, v)
 		case *v2object.HeaderWithSignature:
-			res.hdr = v
+			if v == nil {
+				cc.err = errors.New("empty heading part of in the response")
+				return
+			}
+
+			hdr := v.GetHeader()
+			if hdr == nil {
+				cc.err = errors.New("missing header in the response")
+				return
+			}
+
+			sig := v.GetSignature()
+			if sig == nil {
+				cc.err = errors.New("missing signature in the response")
+				return
+			}
+
+			var objv2 v2object.Object
+			objv2.SetObjectID(&oidV2)
+			objv2.SetHeader(hdr)
+			objv2.SetSignature(sig)
+
+			cc.err = res.hdr.ReadFromV2(objv2)
+			if cc.err != nil {
+				cc.err = fmt.Errorf("invalid header in the respose: %w", cc.err)
+			}
 		}
 	}
 

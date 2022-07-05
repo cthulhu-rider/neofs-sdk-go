@@ -1,8 +1,13 @@
 package object
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash"
+	"strconv"
+	"time"
 
 	"github.com/nspcc-dev/neofs-api-go/v2/object"
 	"github.com/nspcc-dev/neofs-api-go/v2/refs"
@@ -14,7 +19,10 @@ import (
 	"github.com/nspcc-dev/neofs-sdk-go/session"
 	"github.com/nspcc-dev/neofs-sdk-go/user"
 	"github.com/nspcc-dev/neofs-sdk-go/version"
+	"github.com/nspcc-dev/tzhash/tz"
 )
+
+// TODO: upd Object type docs
 
 // Object represents in-memory structure of the NeoFS object.
 // Type is compatible with NeoFS API V2 protocol.
@@ -23,8 +31,337 @@ import (
 //   * InitCreation (an object to be placed in container);
 //   * New (blank instance, usually needed for decoding);
 //   * NewFromV2 (when working under NeoFS API V2 protocol).
-type Object object.Object
+type Object struct {
+	id oid.ID
 
+	hdr object.Header
+
+	sig neofscrypto.Signature
+
+	payload []byte
+}
+
+// TODO: check docs
+// reads Object from the object.Object message. If checkFieldPresence is set,
+// returns an error on absence of any protocol-required field.
+func (x *Object) readFromV2(m object.Object, checkFieldPresence bool) error {
+	var err error
+
+	mID := m.GetObjectID()
+	if mID != nil {
+		err = x.id.ReadFromV2(*mID)
+		if err != nil {
+			return fmt.Errorf("invalid ID: %w", err)
+		}
+	}
+
+	hdr := m.GetHeader()
+	if hdr != nil {
+		mVer := hdr.GetVersion()
+		if mVer != nil {
+			err = new(version.Version).ReadFromV2(*mVer)
+			if err != nil {
+				return fmt.Errorf("invalid version: %w", err)
+			}
+		}
+
+		mCnr := hdr.GetContainerID()
+		if mCnr != nil {
+			err = new(cid.ID).ReadFromV2(*mCnr)
+			if err != nil {
+				return fmt.Errorf("invalid container: %w", err)
+			}
+		} else if checkFieldPresence {
+			return errors.New("missing container")
+		}
+
+		mOwner := hdr.GetOwnerID()
+		if mOwner != nil {
+			var owner user.ID
+
+			err = owner.ReadFromV2(*mOwner)
+			if err != nil {
+				return fmt.Errorf("invalid owner: %w", err)
+			}
+		} else if checkFieldPresence {
+			return errors.New("missing owner")
+		}
+
+		mPayloadChecksum := hdr.GetPayloadHash()
+		if mPayloadChecksum != nil {
+			err = new(checksum.Checksum).ReadFromV2(*mPayloadChecksum)
+			if err != nil {
+				return fmt.Errorf("invalid payload checksum: %w", err)
+			}
+		}
+
+		switch hdr.GetObjectType() {
+		default:
+			return fmt.Errorf("unsupported type %v", hdr.GetObjectType())
+		case
+			object.TypeRegular,
+			object.TypeTombstone,
+			object.TypeStorageGroup,
+			object.TypeLock:
+		}
+
+		mPayloadChecksum = hdr.GetHomomorphicHash()
+		if mPayloadChecksum != nil {
+			err = new(checksum.Checksum).ReadFromV2(*mPayloadChecksum)
+			if err != nil {
+				return fmt.Errorf("invalid payload homomorphic checksum: %w", err)
+			}
+		}
+
+		mSession := hdr.GetSessionToken()
+		if mSession != nil {
+			var s session.Object
+
+			err = s.ReadFromV2(*mSession)
+			if err != nil {
+				return fmt.Errorf("invalid session: %w", err)
+			}
+		}
+
+		attrs := hdr.GetAttributes()
+		mAttr := make(map[string]struct{}, len(attrs))
+		var key, val string
+		var was bool
+		var withTickEpoch, withTickTopic bool
+
+		for i := range attrs {
+			key = attrs[i].GetKey()
+			if key == "" {
+				return errors.New("empty attribute key")
+			}
+
+			_, was = mAttr[key]
+			if was {
+				return fmt.Errorf("duplicated attribute %s", key)
+			}
+
+			val = attrs[i].GetValue()
+			if val == "" {
+				return fmt.Errorf("empty attribute value %s", key)
+			}
+
+			switch key {
+			case object.SysAttributeExpEpoch:
+				_, err = strconv.ParseUint(val, 10, 64)
+			case object.SysAttributeTickEpoch:
+				withTickEpoch = true
+				_, err = strconv.ParseUint(val, 10, 64)
+			case object.SysAttributeTickTopic:
+				withTickTopic = true
+			case attributeTimestamp:
+				_, err = strconv.ParseInt(val, 10, 64)
+			}
+
+			if err != nil {
+				return fmt.Errorf("invalid attribute value %s: %s (%w)", key, val, err)
+			}
+
+			mAttr[key] = struct{}{}
+		}
+
+		if withTickTopic && !withTickEpoch {
+			return errors.New("notification topic without epoch attribute")
+		}
+
+		mSplit := hdr.GetSplit()
+		if mSplit != nil {
+			mPrev := mSplit.GetPrevious()
+			if mPrev != nil {
+				err = new(oid.ID).ReadFromV2(*mPrev)
+				if err != nil {
+					return fmt.Errorf("invalid ID of the previous object: %w", err)
+				}
+			}
+
+			children := mSplit.GetChildren()
+			mChildren := make(map[oid.ID]struct{}, len(children))
+			var child oid.ID
+			var exists bool
+
+			for i := range children {
+				err = child.ReadFromV2(children[i])
+				if err != nil {
+					return fmt.Errorf("invalid child: %w", err)
+				}
+
+				_, exists = mChildren[child]
+				if exists {
+					return fmt.Errorf("duplicated child %s", child)
+				}
+
+				mChildren[child] = struct{}{}
+			}
+
+			var mRoot object.Object
+			mRoot.SetObjectID(mSplit.GetParent())
+			mRoot.SetHeader(mSplit.GetParentHeader())
+			mRoot.SetSignature(mSplit.GetParentSignature())
+
+			err = new(Object).ReadFromV2(mRoot)
+			if err != nil {
+				return fmt.Errorf("invalid root object: %w", err)
+			}
+		}
+	} else if checkFieldPresence {
+		return errors.New("missing header")
+	}
+
+	mSig := m.GetSignature()
+	if mSig != nil {
+		err = x.sig.ReadFromV2(*mSig)
+		if err != nil {
+			return fmt.Errorf("invalid signature: %w", err)
+		}
+	}
+
+	x.hdr = *hdr
+	x.payload = m.GetPayload()
+
+	return nil
+}
+
+// TODO: check docs
+// ReadFromV2 reads Object from the object.Object message. Checks if the
+// message conforms to NeoFS API V2 protocol.
+//
+// See also WriteToV2.
+func (x *Object) ReadFromV2(m object.Object) error {
+	return x.readFromV2(m, true)
+}
+
+// TODO: check docs
+// WriteToV2 writes Container into the container.Container message.
+// The message MUST NOT be nil.
+//
+// See also ReadFromV2.
+func (x Object) WriteToV2(m *object.Object) {
+	var mID refs.ObjectID
+	x.id.WriteToV2(&mID)
+
+	var mSig refs.Signature
+	x.sig.WriteToV2(&mSig)
+
+	m.SetObjectID(&mID)
+	m.SetHeader(&x.hdr)
+	m.SetSignature(&mSig)
+	m.SetPayload(x.payload)
+}
+
+// TODO: add docs
+// Marshal marshals object into a protobuf binary form.
+func (x Object) Marshal() []byte {
+	var m object.Object
+	x.WriteToV2(&m)
+
+	return m.StableMarshal(nil)
+}
+
+// TODO: add docs
+// Unmarshal unmarshals protobuf binary representation of object.
+func (x *Object) Unmarshal(data []byte) error {
+	var m object.Object
+
+	err := m.Unmarshal(data)
+	if err != nil {
+		return err
+	}
+
+	return x.readFromV2(m, false)
+}
+
+// TODO: add docs
+func (x *Object) FinishStructure() {
+	x.id.SetSHA256(sha256.Sum256(x.hdr.StableMarshal(nil)))
+}
+
+// TODO: add docs
+func (x Object) AssertStructure() bool {
+	var id [sha256.Size]byte
+	x.id.Encode(id[:])
+
+	return sha256.Sum256(x.hdr.StableMarshal(nil)) == id
+}
+
+// TODO: add docs
+func (x Object) ID() oid.ID {
+	return x.id
+}
+
+// TODO: add docs
+func (x *Object) Sign(signer neofscrypto.Signer) error {
+	return x.sig.Calculate(signer, x.id.Marshal())
+}
+
+// TODO: add docs
+func (x Object) VerifySignature() bool {
+	return x.sig.Verify(x.id.Marshal())
+}
+
+// TODO: add docs
+func (x *Object) Init() {
+	var m refs.Version
+	version.Current().WriteToV2(&m)
+
+	x.hdr.SetVersion(&m)
+}
+
+// TODO: add docs
+func (x *Object) SetContainer(cnr cid.ID) {
+	var m refs.ContainerID
+	cnr.WriteToV2(&m)
+
+	x.hdr.SetContainerID(&m)
+}
+
+// TODO: add docs
+func (x Object) Container() (res cid.ID) {
+	m := x.hdr.GetContainerID()
+	if m != nil {
+		err := res.ReadFromV2(*m)
+		if err != nil {
+			panic(fmt.Sprintf("decode container field: %v", err))
+		}
+	}
+
+	return
+}
+
+// TODO: add docs
+// SetOwner specifies the owner of the Container. Each Container has exactly
+// one owner, so SetOwner MUST be called for instances to be saved in the
+// NeoFS.
+//
+// See also Owner.
+func (x *Object) SetOwner(owner user.ID) {
+	var m refs.OwnerID
+	owner.WriteToV2(&m)
+
+	x.hdr.SetOwnerID(&m)
+}
+
+// TODO: add docs
+// Owner returns owner of the Container set using SetOwner.
+//
+// Zero Container has no owner which is incorrect according to NeoFS API
+// protocol.
+func (x Object) Owner() (res user.ID) {
+	m := x.hdr.GetOwnerID()
+	if m != nil {
+		err := res.ReadFromV2(*m)
+		if err != nil {
+			panic(fmt.Sprintf("decode owner field: %v", err))
+		}
+	}
+
+	return
+}
+
+// TODO: check docs
 // RequiredFields contains the minimum set of object data that must be set
 // by the NeoFS user at the stage of creation.
 type RequiredFields struct {
@@ -35,634 +372,403 @@ type RequiredFields struct {
 	Owner user.ID
 }
 
+// TODO: check docs
 // InitCreation initializes the object instance with minimum set of required fields.
 // Object is expected (but not required) to be blank. Object must not be nil.
 func InitCreation(dst *Object, rf RequiredFields) {
-	dst.SetContainerID(rf.Container)
-	dst.SetOwnerID(&rf.Owner)
+	dst.Init()
+	dst.SetContainer(rf.Container)
+	dst.SetOwner(rf.Owner)
 }
 
-// NewFromV2 wraps v2 Object message to Object.
-func NewFromV2(oV2 *object.Object) *Object {
-	return (*Object)(oV2)
-}
-
-// New creates and initializes blank Object.
+// TODO: add docs
+// SetOwner specifies the owner of the Container. Each Container has exactly
+// one owner, so SetOwner MUST be called for instances to be saved in the
+// NeoFS.
 //
-// Works similar as NewFromV2(new(Object)).
-func New() *Object {
-	return NewFromV2(new(object.Object))
+// See also Owner.
+func (x *Object) SetPayloadSize(sz uint64) {
+	x.hdr.SetPayloadLength(sz)
 }
 
-// ToV2 converts Object to v2 Object message.
-func (o *Object) ToV2() *object.Object {
-	return (*object.Object)(o)
+// TODO: add docs
+func (x Object) PayloadSize() uint64 {
+	return x.hdr.GetPayloadLength()
 }
 
-// MarshalHeaderJSON marshals object's header
-// into JSON format.
-func (o *Object) MarshalHeaderJSON() ([]byte, error) {
-	return (*object.Object)(o).GetHeader().MarshalJSON()
+// TODO: add docs
+func (x *Object) SetCreationEpoch(epoch uint64) {
+	x.hdr.SetCreationEpoch(epoch)
 }
 
-func (o *Object) setHeaderField(setter func(*object.Header)) {
-	obj := (*object.Object)(o)
-	h := obj.GetHeader()
-
-	if h == nil {
-		h = new(object.Header)
-		obj.SetHeader(h)
-	}
-
-	setter(h)
+// TODO: add docs
+func (x Object) CreatedAt() uint64 {
+	return x.hdr.GetCreationEpoch()
 }
 
-func (o *Object) setSplitFields(setter func(*object.SplitHeader)) {
-	o.setHeaderField(func(h *object.Header) {
-		split := h.GetSplit()
-		if split == nil {
-			split = new(object.SplitHeader)
-			h.SetSplit(split)
-		}
+// TODO: add docs
+func (x *Object) MakeSession(obj session.Object) {
+	var m v2session.Token
+	obj.WriteToV2(&m)
 
-		setter(split)
-	})
+	x.hdr.SetSessionToken(&m)
 }
 
-// ID returns object identifier.
-func (o *Object) ID() (v oid.ID, isSet bool) {
-	v2 := (*object.Object)(o)
-	if id := v2.GetObjectID(); id != nil {
-		_ = v.ReadFromV2(*v2.GetObjectID())
-		isSet = true
-	}
-
-	return
-}
-
-// SetID sets object identifier.
-func (o *Object) SetID(v oid.ID) {
-	var v2 refs.ObjectID
-	v.WriteToV2(&v2)
-
-	(*object.Object)(o).
-		SetObjectID(&v2)
-}
-
-// Signature returns signature of the object identifier.
-func (o *Object) Signature() *neofscrypto.Signature {
-	sigv2 := (*object.Object)(o).GetSignature()
-	if sigv2 == nil {
-		return nil
-	}
-
-	var sig neofscrypto.Signature
-	sig.ReadFromV2(*sigv2) // FIXME(@cthulhu-rider): #226 handle error
-
-	return &sig
-}
-
-// SetSignature sets signature of the object identifier.
-func (o *Object) SetSignature(v *neofscrypto.Signature) {
-	var sigv2 *refs.Signature
-
-	if v != nil {
-		sigv2 = new(refs.Signature)
-
-		v.WriteToV2(sigv2)
-	}
-
-	(*object.Object)(o).SetSignature(sigv2)
-}
-
-// Payload returns payload bytes.
-func (o *Object) Payload() []byte {
-	return (*object.Object)(o).GetPayload()
-}
-
-// SetPayload sets payload bytes.
-func (o *Object) SetPayload(v []byte) {
-	(*object.Object)(o).SetPayload(v)
-}
-
-// Version returns version of the object.
-func (o *Object) Version() *version.Version {
-	var ver version.Version
-	if verV2 := (*object.Object)(o).GetHeader().GetVersion(); verV2 != nil {
-		ver.ReadFromV2(*verV2) // FIXME(@cthulhu-rider): #226 handle error
-	}
-	return &ver
-}
-
-// SetVersion sets version of the object.
-func (o *Object) SetVersion(v *version.Version) {
-	var verV2 refs.Version
-	v.WriteToV2(&verV2)
-
-	o.setHeaderField(func(h *object.Header) {
-		h.SetVersion(&verV2)
-	})
-}
-
-// PayloadSize returns payload length of the object.
-func (o *Object) PayloadSize() uint64 {
-	return (*object.Object)(o).
-		GetHeader().
-		GetPayloadLength()
-}
-
-// SetPayloadSize sets payload length of the object.
-func (o *Object) SetPayloadSize(v uint64) {
-	o.setHeaderField(func(h *object.Header) {
-		h.SetPayloadLength(v)
-	})
-}
-
-// ContainerID returns identifier of the related container.
-func (o *Object) ContainerID() (v cid.ID, isSet bool) {
-	v2 := (*object.Object)(o)
-
-	cidV2 := v2.GetHeader().GetContainerID()
-	if cidV2 != nil {
-		_ = v.ReadFromV2(*cidV2)
-		isSet = true
-	}
-
-	return
-}
-
-// SetContainerID sets identifier of the related container.
-func (o *Object) SetContainerID(v cid.ID) {
-	var cidV2 refs.ContainerID
-	v.WriteToV2(&cidV2)
-
-	o.setHeaderField(func(h *object.Header) {
-		h.SetContainerID(&cidV2)
-	})
-}
-
-// OwnerID returns identifier of the object owner.
-func (o *Object) OwnerID() *user.ID {
-	var id user.ID
-
-	m := (*object.Object)(o).GetHeader().GetOwnerID()
+// TODO: add docs
+func (x Object) Session() (res session.Object) {
+	m := x.hdr.GetSessionToken()
 	if m != nil {
-		_ = id.ReadFromV2(*m)
+		err := res.ReadFromV2(*m)
+		if err != nil {
+			panic(fmt.Sprintf("decode session field: %v", err))
+		}
 	}
 
-	return &id
+	return
 }
 
-// SetOwnerID sets identifier of the object owner.
-func (o *Object) SetOwnerID(v *user.ID) {
-	o.setHeaderField(func(h *object.Header) {
-		var m refs.OwnerID
-		v.WriteToV2(&m)
+// TODO: add docs
+type PayloadChecksum struct {
+	typ refs.ChecksumType
 
-		h.SetOwnerID(&m)
-	})
+	hash.Hash
 }
 
-// CreationEpoch returns epoch number in which object was created.
-func (o *Object) CreationEpoch() uint64 {
-	return (*object.Object)(o).
-		GetHeader().
-		GetCreationEpoch()
+// TODO: add docs
+func (x *PayloadChecksum) InitSHA256() {
+	x.typ = refs.SHA256
+	x.Hash = sha256.New()
 }
 
-// SetCreationEpoch sets epoch number in which object was created.
-func (o *Object) SetCreationEpoch(v uint64) {
-	o.setHeaderField(func(h *object.Header) {
-		h.SetCreationEpoch(v)
-	})
+// TODO: add docs
+func (x *PayloadChecksum) InitTillichZemor() {
+	x.typ = refs.TillichZemor
+	x.Hash = tz.New()
 }
 
-// PayloadChecksum returns checksum of the object payload and
-// bool that indicates checksum presence in the object.
-//
-// Zero Object does not have payload checksum.
-//
-// See also SetPayloadChecksum.
-func (o *Object) PayloadChecksum() (checksum.Checksum, bool) {
-	var v checksum.Checksum
-	v2 := (*object.Object)(o)
+// TODO: add docs
+func (x *Object) SetPayloadChecksum(cs PayloadChecksum) {
+	var m refs.Checksum
+	m.SetType(cs.typ)
+	m.SetSum(cs.Sum(nil))
 
-	if hash := v2.GetHeader().GetPayloadHash(); hash != nil {
-		v.ReadFromV2(*hash) // FIXME(@cthulhu-rider): #226 handle error
-		return v, true
+	x.hdr.SetPayloadHash(&m)
+}
+
+// TODO: add docs
+func (x Object) InitPayloadVerificationChecksum(cs *PayloadChecksum) {
+	switch m := x.hdr.GetPayloadHash(); m.GetType() {
+	default:
+		panic(fmt.Sprintf("unsupported checksum type %v", m.GetType()))
+	case 0, refs.SHA256:
+		cs.InitSHA256()
+	case refs.TillichZemor:
+		cs.InitTillichZemor()
+	}
+}
+
+// TODO: add docs
+func (x Object) AssertPayloadChecksum(cs PayloadChecksum) bool {
+	m := x.hdr.GetPayloadHash()
+	return m.GetType() == cs.typ && bytes.Equal(m.GetSum(), cs.Sum(nil))
+}
+
+// TODO: add docs
+type PayloadHomomorphicChecksum struct {
+	hash.Hash
+}
+
+// TODO: add docs
+func (x *PayloadHomomorphicChecksum) Init() {
+	x.Hash = sha256.New()
+	x.Hash = tz.New()
+}
+
+// TODO: add docs
+func (x *Object) SetPayloadHomomorphicChecksum(cs PayloadHomomorphicChecksum) {
+	var m refs.Checksum
+	m.SetType(refs.TillichZemor)
+	m.SetSum(cs.Sum(nil))
+
+	x.hdr.SetPayloadHash(&m)
+}
+
+type Type struct {
+	m object.Type
+}
+
+func (x *Type) MakeTombstone() {
+	x.m = object.TypeTombstone
+}
+
+func (x Type) Tombstone() bool {
+	return x.m == object.TypeTombstone
+}
+
+func (x *Type) MakeStorageGroup() {
+	x.m = object.TypeStorageGroup
+}
+
+func (x Type) StorageGroup() bool {
+	return x.m == object.TypeStorageGroup
+}
+
+func (x *Type) MakeLock() {
+	x.m = object.TypeLock
+}
+
+func (x Type) Lock() bool {
+	return x.m == object.TypeLock
+}
+
+func (x *Object) SetType(t Type) {
+	x.hdr.SetObjectType(t.m)
+}
+
+func (x Object) Type() (res Type) {
+	switch x.hdr.GetObjectType() {
+	default:
+		panic(fmt.Sprintf("unsupported object type %v", x.hdr.GetObjectType()))
+	case object.TypeTombstone:
+		res.MakeTombstone()
+	case object.TypeStorageGroup:
+		res.MakeStorageGroup()
+	case object.TypeLock:
+		res.MakeLock()
 	}
 
-	return v, false
+	return
 }
 
-// SetPayloadChecksum sets checksum of the object payload.
-//
-// See also PayloadChecksum.
-func (o *Object) SetPayloadChecksum(v checksum.Checksum) {
-	var v2 refs.Checksum
-	v.WriteToV2(&v2)
-
-	o.setHeaderField(func(h *object.Header) {
-		h.SetPayloadHash(&v2)
-	})
+func (x Type) String() string {
+	return x.m.String()
 }
 
-// PayloadHomomorphicHash returns homomorphic hash of the object
-// payload and bool that indicates checksum presence in the object.
-//
-// Zero Object does not have payload homomorphic checksum.
-//
-// See also SetPayloadHomomorphicHash.
-func (o *Object) PayloadHomomorphicHash() (checksum.Checksum, bool) {
-	var v checksum.Checksum
-	v2 := (*object.Object)(o)
+// TODO: check docs
+// SetPayload sets payload bytes.
+func (x *Object) SetPayload(payload []byte) {
+	x.payload = payload
+}
 
-	if hash := v2.GetHeader().GetHomomorphicHash(); hash != nil {
-		v.ReadFromV2(*hash) // FIXME(@cthulhu-rider): #226 handle error
-		return v, true
+// TODO: check docs
+// Payload returns payload bytes.
+func (x Object) Payload() []byte {
+	return x.payload
+}
+
+// TODO: check docs
+// SetAttribute sets Container attribute value by key. Both key and value
+// MUST NOT be empty. Attributes set by the creator (owner) are most commonly
+// ignored by the NeoFS system and used for application layer. Some attributes
+// are so-called system or well-known attributes: they are reserved for system
+// needs. System attributes SHOULD NOT be modified using SetAttribute, use
+// corresponding methods/functions. List of the reserved keys is documented
+// in the particular protocol version.
+//
+// SetAttribute overwrites existing attribute value.
+//
+// See also Attribute, IterateAttributes.
+func (x *Object) SetAttribute(key, value string) {
+	if key == "" {
+		panic("empty attribute key")
+	} else if value == "" {
+		panic("empty attribute value")
 	}
 
-	return v, false
+	attrs := x.hdr.GetAttributes()
+	ln := len(attrs)
+
+	for i := 0; i < ln; i++ {
+		if attrs[i].GetKey() == key {
+			attrs[i].SetValue(value)
+			return
+		}
+	}
+
+	attrs = append(attrs, object.Attribute{})
+	attrs[ln].SetKey(key)
+	attrs[ln].SetValue(value)
+
+	x.hdr.SetAttributes(attrs)
 }
 
-// SetPayloadHomomorphicHash sets homomorphic hash of the object payload.
+// TODO: check docs
+// Attribute reads value of the Container attribute by key. Empty result means
+// attribute absence.
 //
-// See also PayloadHomomorphicHash.
-func (o *Object) SetPayloadHomomorphicHash(v checksum.Checksum) {
-	var v2 refs.Checksum
-	v.WriteToV2(&v2)
-
-	o.setHeaderField(func(h *object.Header) {
-		h.SetHomomorphicHash(&v2)
-	})
-}
-
-// Attributes returns object attributes.
-func (o *Object) Attributes() []Attribute {
-	attrs := (*object.Object)(o).
-		GetHeader().
-		GetAttributes()
-
-	res := make([]Attribute, len(attrs))
-
+// See also SetAttribute, IterateAttributes.
+func (x Object) Attribute(key string) string {
+	attrs := x.hdr.GetAttributes()
 	for i := range attrs {
-		res[i] = *NewAttributeFromV2(&attrs[i])
+		if attrs[i].GetKey() == key {
+			return attrs[i].GetValue()
+		}
 	}
 
-	return res
+	return ""
 }
 
-// SetAttributes sets object attributes.
-func (o *Object) SetAttributes(v ...Attribute) {
-	attrs := make([]object.Attribute, len(v))
-
-	for i := range v {
-		attrs[i] = *v[i].ToV2()
+// TODO: check docs
+// IterateAttributes iterates over all Container attributes and passes them
+// into f. The handler MUST NOT be nil.
+//
+// See also SetAttribute, Attribute.
+func (x Object) IterateAttributes(f func(key, val string)) {
+	attrs := x.hdr.GetAttributes()
+	for i := range attrs {
+		f(attrs[i].GetKey(), attrs[i].GetValue())
 	}
-
-	o.setHeaderField(func(h *object.Header) {
-		h.SetAttributes(attrs)
-	})
 }
 
-// PreviousID returns identifier of the previous sibling object.
-func (o *Object) PreviousID() (v oid.ID, isSet bool) {
-	v2 := (*object.Object)(o)
+// TODO: add docs
+func LimitLifetime(obj *Object, epoch uint64) {
+	obj.SetAttribute(object.SysAttributeExpEpoch, strconv.FormatUint(epoch, 10))
+}
 
-	v2Prev := v2.GetHeader().GetSplit().GetPrevious()
-	if v2Prev != nil {
-		_ = v.ReadFromV2(*v2Prev)
-		isSet = true
+// TODO: add docs
+func ExpiresAfter(obj Object) (res uint64) {
+	attrVal := obj.Attribute(object.SysAttributeExpEpoch)
+	if attrVal != "" {
+		var err error
+
+		res, err = strconv.ParseUint(attrVal, 10, 64)
+		if err != nil {
+			panic(fmt.Sprintf("invalid expiration attribute %s: %v", attrVal, err))
+		}
 	}
 
 	return
 }
 
-// SetPreviousID sets identifier of the previous sibling object.
-func (o *Object) SetPreviousID(v oid.ID) {
-	var v2 refs.ObjectID
-	v.WriteToV2(&v2)
+// TODO: add docs
+type Notification struct {
+	enabled bool
 
-	o.setSplitFields(func(split *object.SplitHeader) {
-		split.SetPrevious(&v2)
-	})
+	epoch uint64
+
+	topic string
 }
 
-// Children return list of the identifiers of the child objects.
-func (o *Object) Children() []oid.ID {
-	v2 := (*object.Object)(o)
-	ids := v2.GetHeader().GetSplit().GetChildren()
+func (x Notification) Enabled() bool {
+	return x.enabled
+}
 
-	var (
-		id  oid.ID
-		res = make([]oid.ID, len(ids))
-	)
+// TODO: add docs
+func (x *Notification) SetGenerationTime(epoch uint64) {
+	x.enabled = true
+	x.epoch = epoch
+}
 
-	for i := range ids {
-		_ = id.ReadFromV2(ids[i])
-		res[i] = id
+// TODO: add docs
+func (x Notification) GenerationTime() uint64 {
+	return x.epoch
+}
+
+// TODO: check docs
+// SetTopic sets optional object notification topic.
+func (x *Notification) SetTopic(topic string) {
+	x.enabled = true
+	x.topic = topic
+}
+
+// TODO: check docs
+func (x Notification) Topic() string {
+	return x.topic
+}
+
+// TODO: check docs
+func WriteNotification(obj *Object, n Notification) {
+	obj.SetAttribute(object.SysAttributeTickEpoch, strconv.FormatUint(n.GenerationTime(), 10))
+
+	if topic := n.Topic(); topic != "" {
+		obj.SetAttribute(object.SysAttributeTickTopic, topic)
 	}
-
-	return res
 }
 
-// SetChildren sets list of the identifiers of the child objects.
-func (o *Object) SetChildren(v ...oid.ID) {
-	var (
-		v2  refs.ObjectID
-		ids = make([]refs.ObjectID, len(v))
-	)
+// TODO: check docs
+func ReadNotification(obj Object) (res Notification) {
+	attrVal := obj.Attribute(object.SysAttributeTickEpoch)
+	if attrVal != "" {
+		epoch, err := strconv.ParseUint(attrVal, 10, 64)
+		if err != nil {
+			panic(fmt.Sprintf("invalid notification time attribute %s: %v", attrVal, err))
+		}
 
-	for i := range v {
-		v[i].WriteToV2(&v2)
-		ids[i] = v2
-	}
-
-	o.setSplitFields(func(split *object.SplitHeader) {
-		split.SetChildren(ids)
-	})
-}
-
-// NotificationInfo groups information about object notification
-// that can be written to object.
-//
-// Topic is an optional field.
-type NotificationInfo struct {
-	ni object.NotificationInfo
-}
-
-// Epoch returns object notification tick
-// epoch.
-func (n NotificationInfo) Epoch() uint64 {
-	return n.ni.Epoch()
-}
-
-// SetEpoch sets object notification tick
-// epoch.
-func (n *NotificationInfo) SetEpoch(epoch uint64) {
-	n.ni.SetEpoch(epoch)
-}
-
-// Topic return optional object notification
-// topic.
-func (n NotificationInfo) Topic() string {
-	return n.ni.Topic()
-}
-
-// SetTopic sets optional object notification
-// topic.
-func (n *NotificationInfo) SetTopic(topic string) {
-	n.ni.SetTopic(topic)
-}
-
-// NotificationInfo returns notification info
-// read from the object structure.
-// Returns any error that appeared during notification
-// information parsing.
-func (o *Object) NotificationInfo() (*NotificationInfo, error) {
-	ni, err := object.GetNotificationInfo((*object.Object)(o))
-	if err != nil {
-		return nil, err
-	}
-
-	return &NotificationInfo{
-		ni: *ni,
-	}, nil
-}
-
-// SetNotification writes NotificationInfo to the object structure.
-func (o *Object) SetNotification(ni NotificationInfo) {
-	object.WriteNotificationInfo((*object.Object)(o), ni.ni)
-}
-
-// SplitID return split identity of split object. If object is not split
-// returns nil.
-func (o *Object) SplitID() *SplitID {
-	return NewSplitIDFromV2(
-		(*object.Object)(o).
-			GetHeader().
-			GetSplit().
-			GetSplitID(),
-	)
-}
-
-// SetSplitID sets split identifier for the split object.
-func (o *Object) SetSplitID(id *SplitID) {
-	o.setSplitFields(func(split *object.SplitHeader) {
-		split.SetSplitID(id.ToV2())
-	})
-}
-
-// ParentID returns identifier of the parent object.
-func (o *Object) ParentID() (v oid.ID, isSet bool) {
-	v2 := (*object.Object)(o)
-
-	v2Par := v2.GetHeader().GetSplit().GetParent()
-	if v2Par != nil {
-		_ = v.ReadFromV2(*v2Par)
-		isSet = true
+		res.SetGenerationTime(epoch)
+		res.SetTopic(obj.Attribute(object.SysAttributeTickTopic))
 	}
 
 	return
 }
 
-// SetParentID sets identifier of the parent object.
-func (o *Object) SetParentID(v oid.ID) {
-	var v2 refs.ObjectID
-	v.WriteToV2(&v2)
+const attributeName = "Name"
 
-	o.setSplitFields(func(split *object.SplitHeader) {
-		split.SetParent(&v2)
-	})
-}
-
-// Parent returns parent object w/o payload.
-func (o *Object) Parent() *Object {
-	h := (*object.Object)(o).
-		GetHeader().
-		GetSplit()
-
-	parSig := h.GetParentSignature()
-	parHdr := h.GetParentHeader()
-
-	if parSig == nil && parHdr == nil {
-		return nil
-	}
-
-	oV2 := new(object.Object)
-	oV2.SetObjectID(h.GetParent())
-	oV2.SetSignature(parSig)
-	oV2.SetHeader(parHdr)
-
-	return NewFromV2(oV2)
-}
-
-// SetParent sets parent object w/o payload.
-func (o *Object) SetParent(v *Object) {
-	o.setSplitFields(func(split *object.SplitHeader) {
-		split.SetParent((*object.Object)(v).GetObjectID())
-		split.SetParentSignature((*object.Object)(v).GetSignature())
-		split.SetParentHeader((*object.Object)(v).GetHeader())
-	})
-}
-
-func (o *Object) initRelations() {
-	o.setHeaderField(func(h *object.Header) {
-		h.SetSplit(new(object.SplitHeader))
-	})
-}
-
-func (o *Object) resetRelations() {
-	o.setHeaderField(func(h *object.Header) {
-		h.SetSplit(nil)
-	})
-}
-
-// SessionToken returns token of the session
-// within which object was created.
-func (o *Object) SessionToken() *session.Object {
-	tokv2 := (*object.Object)(o).GetHeader().GetSessionToken()
-	if tokv2 == nil {
-		return nil
-	}
-
-	var res session.Object
-
-	_ = res.ReadFromV2(*tokv2)
-
-	return &res
-}
-
-// SetSessionToken sets token of the session
-// within which object was created.
-func (o *Object) SetSessionToken(v *session.Object) {
-	o.setHeaderField(func(h *object.Header) {
-		var tokv2 *v2session.Token
-
-		if v != nil {
-			tokv2 = new(v2session.Token)
-			v.WriteToV2(tokv2)
-		}
-
-		h.SetSessionToken(tokv2)
-	})
-}
-
-// Type returns type of the object.
-func (o *Object) Type() Type {
-	return TypeFromV2(
-		(*object.Object)(o).
-			GetHeader().
-			GetObjectType(),
-	)
-}
-
-// SetType sets type of the object.
-func (o *Object) SetType(v Type) {
-	o.setHeaderField(func(h *object.Header) {
-		h.SetObjectType(v.ToV2())
-	})
-}
-
-// CutPayload returns Object w/ empty payload.
+// TODO: check docs
+// SetName sets human-readable name of the Container. Name MUST NOT be empty.
 //
-// Changes of non-payload fields affect source object.
-func (o *Object) CutPayload() *Object {
-	ov2 := new(object.Object)
-	*ov2 = *(*object.Object)(o)
-	ov2.SetPayload(nil)
-
-	return (*Object)(ov2)
+// See also Name.
+func SetName(obj *Object, name string) {
+	obj.SetAttribute(attributeName, name)
 }
 
-func (o *Object) HasParent() bool {
-	return (*object.Object)(o).
-		GetHeader().
-		GetSplit() != nil
+// TODO: check docs
+// Name returns container name set using SetName.
+//
+// Zero Container has no name.
+func Name(obj Object) string {
+	return obj.Attribute(attributeName)
 }
 
-// ResetRelations removes all fields of links with other objects.
-func (o *Object) ResetRelations() {
-	o.resetRelations()
+const attributeTimestamp = "Timestamp"
+
+// TODO: check docs
+// SetCreationTime writes container's creation time in Unix Timestamp format.
+//
+// See also CreatedAt.
+func SetCreationTime(obj *Object, t time.Time) {
+	obj.SetAttribute(attributeTimestamp, strconv.FormatInt(t.Unix(), 10))
 }
 
-// InitRelations initializes relation field.
-func (o *Object) InitRelations() {
-	o.initRelations()
-}
+// TODO: check docs
+// CreatedAt returns container's creation time set using SetCreationTime.
+//
+// Zero Container has zero timestamp (in seconds).
+func CreatedAt(obj Object) time.Time {
+	var sec int64
 
-// Marshal marshals object into a protobuf binary form.
-func (o *Object) Marshal() ([]byte, error) {
-	return (*object.Object)(o).StableMarshal(nil), nil
-}
+	attr := obj.Attribute(attributeTimestamp)
+	if attr != "" {
+		var err error
 
-// Unmarshal unmarshals protobuf binary representation of object.
-func (o *Object) Unmarshal(data []byte) error {
-	err := (*object.Object)(o).Unmarshal(data)
-	if err != nil {
-		return err
-	}
-
-	return formatCheck((*object.Object)(o))
-}
-
-// MarshalJSON encodes object to protobuf JSON format.
-func (o *Object) MarshalJSON() ([]byte, error) {
-	return (*object.Object)(o).MarshalJSON()
-}
-
-// UnmarshalJSON decodes object from protobuf JSON format.
-func (o *Object) UnmarshalJSON(data []byte) error {
-	err := (*object.Object)(o).UnmarshalJSON(data)
-	if err != nil {
-		return err
-	}
-
-	return formatCheck((*object.Object)(o))
-}
-
-var errOIDNotSet = errors.New("object ID is not set")
-var errCIDNotSet = errors.New("container ID is not set")
-
-func formatCheck(v2 *object.Object) error {
-	var (
-		oID oid.ID
-		cID cid.ID
-	)
-
-	oidV2 := v2.GetObjectID()
-	if oidV2 == nil {
-		return errOIDNotSet
-	}
-
-	err := oID.ReadFromV2(*oidV2)
-	if err != nil {
-		return fmt.Errorf("could not convert V2 object ID: %w", err)
-	}
-
-	cidV2 := v2.GetHeader().GetContainerID()
-	if cidV2 == nil {
-		return errCIDNotSet
-	}
-
-	err = cID.ReadFromV2(*cidV2)
-	if err != nil {
-		return fmt.Errorf("could not convert V2 container ID: %w", err)
-	}
-
-	if prev := v2.GetHeader().GetSplit().GetPrevious(); prev != nil {
-		err = oID.ReadFromV2(*prev)
+		sec, err = strconv.ParseInt(obj.Attribute(attributeTimestamp), 10, 64)
 		if err != nil {
-			return fmt.Errorf("could not convert previous object ID: %w", err)
+			panic(fmt.Sprintf("parse object timestamp: %v", err))
 		}
 	}
 
-	if parent := v2.GetHeader().GetSplit().GetParent(); parent != nil {
-		err = oID.ReadFromV2(*parent)
-		if err != nil {
-			return fmt.Errorf("could not convert parent object ID: %w", err)
-		}
-	}
+	return time.Unix(sec, 0)
+}
 
-	return nil
+const attributeFilename = "FileName"
+
+// TODO: add docs
+func SetFilename(obj *Object, filename string) {
+	obj.SetAttribute(attributeFilename, filename)
+}
+
+// TODO: add docs
+func Filename(obj Object) string {
+	return obj.Attribute(attributeFilename)
+}
+
+const attributeContentType = "Content-Type"
+
+// TODO: add docs
+func SetContentType(obj *Object, contentType string) {
+	obj.SetAttribute(attributeContentType, contentType)
+}
+
+// TODO: add docs
+func ContentType(obj Object) string {
+	return obj.Attribute(attributeContentType)
 }

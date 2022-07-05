@@ -107,7 +107,8 @@ func (x *ObjectWriter) WithXHeaders(hs ...string) {
 // WriteHeader writes header of the object. Result means success.
 // Failure reason can be received via Close.
 func (x *ObjectWriter) WriteHeader(hdr object.Object) bool {
-	v2Hdr := hdr.ToV2()
+	var v2Hdr v2object.Object
+	hdr.WriteToV2(&v2Hdr)
 
 	x.partInit.SetObjectID(v2Hdr.GetObjectID())
 	x.partInit.SetHeader(v2Hdr.GetHeader())

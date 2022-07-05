@@ -36,7 +36,7 @@ type PrmObjectSearch struct {
 	cnrSet bool
 	cnrID  cid.ID
 
-	filters object.SearchFilters
+	filter object.Filter
 }
 
 // MarkLocal tells the server to execute the operation locally.
@@ -74,8 +74,8 @@ func (x *PrmObjectSearch) InContainer(id cid.ID) {
 
 // SetFilters sets filters by which to select objects. All container objects
 // match unset/empty filters.
-func (x *PrmObjectSearch) SetFilters(filters object.SearchFilters) {
-	x.filters = filters
+func (x *PrmObjectSearch) SetFilter(filter object.Filter) {
+	x.filter = filter
 }
 
 // ResObjectSearch groups the final result values of ObjectSearch operation.
@@ -253,7 +253,7 @@ func (c *Client) ObjectSearchInit(ctx context.Context, prm PrmObjectSearch) (*Ob
 
 	body.SetVersion(1)
 	body.SetContainerID(&cidV2)
-	body.SetFilters(prm.filters.ToV2())
+	prm.filter.WriteToV2(&body)
 
 	// form meta header
 	var meta v2session.RequestMetaHeader

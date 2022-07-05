@@ -364,17 +364,14 @@ func (c *clientWrapper) objectHead(ctx context.Context, prm PrmObjectHead) (*obj
 		cliPrm.UseKey(*prm.key)
 	}
 
-	var obj object.Object
-
 	res, err := c.client.ObjectHead(ctx, cliPrm)
 	if err != nil {
 		return nil, fmt.Errorf("read object header via client: %w", err)
 	}
-	if !res.ReadHeader(&obj) {
-		return nil, errors.New("missing object header in response")
-	}
 
-	return &obj, nil
+	hdr := res.Header()
+
+	return &hdr, nil
 }
 
 func (c *clientWrapper) objectRange(ctx context.Context, prm PrmObjectRange) (*ResObjectRange, error) {
@@ -407,7 +404,7 @@ func (c *clientWrapper) objectSearch(ctx context.Context, prm PrmObjectSearch) (
 	var cliPrm sdkClient.PrmObjectSearch
 
 	cliPrm.InContainer(prm.cnrID)
-	cliPrm.SetFilters(prm.filters)
+	cliPrm.SetFilter(prm.filter)
 
 	if prm.stoken != nil {
 		cliPrm.WithinSession(*prm.stoken)
@@ -707,8 +704,8 @@ func (x *PrmObjectRange) SetLength(length uint64) {
 type PrmObjectSearch struct {
 	prmCommon
 
-	cnrID   cid.ID
-	filters object.SearchFilters
+	cnrID  cid.ID
+	filter object.Filter
 }
 
 // SetContainerID specifies the container in which to look for objects.
@@ -716,9 +713,9 @@ func (x *PrmObjectSearch) SetContainerID(cnrID cid.ID) {
 	x.cnrID = cnrID
 }
 
-// SetFilters specifies filters by which to select objects.
-func (x *PrmObjectSearch) SetFilters(filters object.SearchFilters) {
-	x.filters = filters
+// SetFilter specifies filter by which to select objects.
+func (x *PrmObjectSearch) SetFilter(filter object.Filter) {
+	x.filter = filter
 }
 
 // PrmContainerPut groups parameters of PutContainer operation.
@@ -1392,12 +1389,10 @@ func (p *Pool) fillAppropriateKey(prm *prmCommon) {
 
 // PutObject writes an object through a remote server using NeoFS API protocol.
 func (p *Pool) PutObject(ctx context.Context, prm PrmObjectPut) (*oid.ID, error) {
-	cnr, _ := prm.hdr.ContainerID()
-
 	var prmCtx prmContext
 	prmCtx.useDefaultSession()
 	prmCtx.useVerb(session.VerbObjectPut)
-	prmCtx.useContainer(cnr)
+	prmCtx.useContainer(prm.hdr.Container())
 
 	p.fillAppropriateKey(&prm.prmCommon)
 
