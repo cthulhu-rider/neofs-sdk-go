@@ -82,6 +82,8 @@ type PublicKey interface {
 	// on any failure except (*).
 	//
 	// Encode is a reverse operation to Decode.
+	//
+	// Use SerializePublicKey to delegate buffer allocation.
 	Encode(buf []byte) int
 
 	// Decode decodes binary public key.
@@ -91,4 +93,10 @@ type PublicKey interface {
 
 	// Verify checks signature of the given data. True means correct signature.
 	Verify(data, signature []byte) bool
+}
+
+// SerializePublicKey serializes given PublicKey.
+func SerializePublicKey(key PublicKey) []byte {
+	b := make([]byte, key.MaxEncodedSize())
+	return b[:key.Encode(b)]
 }
