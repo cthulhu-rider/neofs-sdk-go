@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/nspcc-dev/neofs-api-go/v2/acl"
+	v2acl "github.com/nspcc-dev/neofs-api-go/v2/acl"
 	"github.com/nspcc-dev/neofs-api-go/v2/refs"
+	"github.com/nspcc-dev/neofs-sdk-go/container/acl"
 	cid "github.com/nspcc-dev/neofs-sdk-go/container/id"
 	neofscrypto "github.com/nspcc-dev/neofs-sdk-go/crypto"
 	neofsecdsa "github.com/nspcc-dev/neofs-sdk-go/crypto/ecdsa"
-	"github.com/nspcc-dev/neofs-sdk-go/eacl"
 	"github.com/nspcc-dev/neofs-sdk-go/user"
 )
 
@@ -24,8 +24,8 @@ type Token struct {
 	targetUserSet bool
 	targetUser    user.ID
 
-	eaclTableSet bool
-	eaclTable    eacl.Table
+	eACLSet bool
+	eACL    acl.Extended
 
 	lifetimeSet   bool
 	iat, nbf, exp uint64
@@ -34,9 +34,9 @@ type Token struct {
 	sig    refs.Signature
 }
 
-// reads Token from the acl.BearerToken message. If checkFieldPresence is set,
+// reads Token from the v2acl.BearerToken message. If checkFieldPresence is set,
 // returns an error on absence of any protocol-required field.
-func (b *Token) readFromV2(m acl.BearerToken, checkFieldPresence bool) error {
+func (b *Token) readFromV2(m v2acl.BearerToken, checkFieldPresence bool) error {
 	var err error
 
 	body := m.GetBody()
@@ -44,11 +44,14 @@ func (b *Token) readFromV2(m acl.BearerToken, checkFieldPresence bool) error {
 		return errors.New("missing token body")
 	}
 
-	eaclTable := body.GetEACL()
-	if b.eaclTableSet = eaclTable != nil; b.eaclTableSet {
-		b.eaclTable = *eacl.NewTableFromV2(eaclTable)
+	eACL := body.GetEACL()
+	if b.eACLSet = eACL != nil; b.eACLSet {
+		err = b.eACL.ReadFromV2(*eACL)
+		if err != nil {
+			return fmt.Errorf("invalid extended ACL: %w", err)
+		}
 	} else if checkFieldPresence {
-		return errors.New("missing eACL table")
+		return errors.New("missing extended ACL")
 	}
 
 	targetUser := body.GetOwnerID()
@@ -78,22 +81,25 @@ func (b *Token) readFromV2(m acl.BearerToken, checkFieldPresence bool) error {
 	return nil
 }
 
-// ReadFromV2 reads Token from the acl.BearerToken message.
+// ReadFromV2 reads Token from the v2acl.BearerToken message.
 //
 // See also WriteToV2.
-func (b *Token) ReadFromV2(m acl.BearerToken) error {
+func (b *Token) ReadFromV2(m v2acl.BearerToken) error {
 	return b.readFromV2(m, true)
 }
 
-func (b Token) fillBody() *acl.BearerTokenBody {
-	if !b.eaclTableSet && !b.targetUserSet && !b.lifetimeSet {
+func (b Token) fillBody() *v2acl.BearerTokenBody {
+	if !b.eACLSet && !b.targetUserSet && !b.lifetimeSet {
 		return nil
 	}
 
-	var body acl.BearerTokenBody
+	var body v2acl.BearerTokenBody
 
-	if b.eaclTableSet {
-		body.SetEACL(b.eaclTable.ToV2())
+	if b.eACLSet {
+		var eACL v2acl.Table
+		b.eACL.WriteToV2(&eACL)
+
+		body.SetEACL(&eACL)
 	}
 
 	if b.targetUserSet {
@@ -104,7 +110,7 @@ func (b Token) fillBody() *acl.BearerTokenBody {
 	}
 
 	if b.lifetimeSet {
-		var lifetime acl.TokenLifetime
+		var lifetime v2acl.TokenLifetime
 		lifetime.SetIat(b.iat)
 		lifetime.SetNbf(b.nbf)
 		lifetime.SetExp(b.exp)
@@ -119,11 +125,11 @@ func (b Token) signedData() []byte {
 	return b.fillBody().StableMarshal(nil)
 }
 
-// WriteToV2 writes Token to the acl.BearerToken message.
+// WriteToV2 writes Token to the v2acl.BearerToken message.
 // The message must not be nil.
 //
 // See also ReadFromV2.
-func (b Token) WriteToV2(m *acl.BearerToken) {
+func (b Token) WriteToV2(m *v2acl.BearerToken) {
 	m.SetBody(b.fillBody())
 
 	var sig *refs.Signature
@@ -183,29 +189,29 @@ func (b Token) InvalidAt(epoch uint64) bool {
 	return !b.lifetimeSet || b.nbf > epoch || b.iat > epoch || b.exp < epoch
 }
 
-// SetEACLTable sets eacl.Table that replaces the one from the issuer's
-// container. If table has specified container, bearer token can be used only
-// for operations within this specific container. Otherwise, Token can be used
-// within any issuer's container.
+// SetExtendedACL sets acl.Extended that replaces the one from the issuer's
+// container. If acl.Extended has specified container, bearer token can be used
+// only for operations within this specific container. Otherwise, Token can be
+// used within any issuer's container.
 //
-// SetEACLTable MUST be called if Token is going to be transmitted over
+// SetExtendedACL MUST be called if Token is going to be transmitted over
 // NeoFS API V2 protocol.
 //
-// See also EACLTable, AssertContainer.
-func (b *Token) SetEACLTable(table eacl.Table) {
-	b.eaclTable = table
-	b.eaclTableSet = true
+// See also ExtendedACL, AssertContainer.
+func (b *Token) SetExtendedACL(eACL acl.Extended) {
+	b.eACL = eACL
+	b.eACLSet = true
 }
 
-// EACLTable returns extended ACL table set by SetEACLTable.
+// ExtendedACL returns acl.Extended set by SetExtendedACL.
 //
-// Zero Token has zero eacl.Table.
-func (b Token) EACLTable() eacl.Table {
-	if b.eaclTableSet {
-		return b.eaclTable
+// Zero Token has zero acl.Extended.
+func (b Token) ExtendedACL() acl.Extended {
+	if b.eACLSet {
+		return b.eACL
 	}
 
-	return eacl.Table{}
+	return acl.Extended{}
 }
 
 // AssertContainer checks if the token is valid within the given container.
@@ -215,14 +221,14 @@ func (b Token) EACLTable() eacl.Table {
 //
 // Zero Token is valid in any container.
 //
-// See also SetEACLTable.
+// See also SetExtendedACL.
 func (b Token) AssertContainer(cnr cid.ID) bool {
-	if !b.eaclTableSet {
+	if !b.eACLSet {
 		return true
 	}
 
-	cnrTable, set := b.eaclTable.CID()
-	return !set || cnrTable.Equals(cnr)
+	eACLCnr, set := b.eACL.Container()
+	return !set || eACLCnr.Equals(cnr)
 }
 
 // ForUser specifies ID of the user who can use the Token for the operations
@@ -290,7 +296,7 @@ func (b Token) VerifySignature() bool {
 //
 // See also Unmarshal.
 func (b Token) Marshal() []byte {
-	var m acl.BearerToken
+	var m v2acl.BearerToken
 	b.WriteToV2(&m)
 
 	return m.StableMarshal(nil)
@@ -302,7 +308,7 @@ func (b Token) Marshal() []byte {
 //
 // See also Marshal.
 func (b *Token) Unmarshal(data []byte) error {
-	var m acl.BearerToken
+	var m v2acl.BearerToken
 
 	err := m.Unmarshal(data)
 	if err != nil {
@@ -317,7 +323,7 @@ func (b *Token) Unmarshal(data []byte) error {
 //
 // See also UnmarshalJSON.
 func (b Token) MarshalJSON() ([]byte, error) {
-	var m acl.BearerToken
+	var m v2acl.BearerToken
 	b.WriteToV2(&m)
 
 	return m.MarshalJSON()
@@ -328,7 +334,7 @@ func (b Token) MarshalJSON() ([]byte, error) {
 //
 // See also MarshalJSON.
 func (b *Token) UnmarshalJSON(data []byte) error {
-	var m acl.BearerToken
+	var m v2acl.BearerToken
 
 	err := m.UnmarshalJSON(data)
 	if err != nil {

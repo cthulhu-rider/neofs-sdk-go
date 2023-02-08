@@ -46,7 +46,7 @@ func (x *PrmObjectDelete) WithinSession(t session.Object) {
 
 // WithBearerToken attaches bearer token to be used for the operation.
 //
-// If set, underlying eACL rules will be used in access control.
+// If set, underlying extended ACL rules will be used in access control.
 //
 // Must be signed.
 func (x *PrmObjectDelete) WithBearerToken(t bearer.Token) {

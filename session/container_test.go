@@ -482,9 +482,9 @@ func TestContainer_ForVerb(t *testing.T) {
 	}
 
 	for from, to := range map[session.ContainerVerb]v2session.ContainerSessionVerb{
-		session.VerbContainerPut:     v2session.ContainerVerbPut,
-		session.VerbContainerDelete:  v2session.ContainerVerbDelete,
-		session.VerbContainerSetEACL: v2session.ContainerVerbSetEACL,
+		session.VerbContainerPut:            v2session.ContainerVerbPut,
+		session.VerbContainerDelete:         v2session.ContainerVerbDelete,
+		session.VerbContainerSetExtendedACL: v2session.ContainerVerbSetEACL,
 	} {
 		val.ForVerb(from)
 

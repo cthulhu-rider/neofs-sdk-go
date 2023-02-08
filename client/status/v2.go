@@ -82,7 +82,7 @@ func FromStatusV2(st *status.Status) Status {
 		case container.StatusNotFound:
 			decoder = new(ContainerNotFound)
 		case container.StatusEACLNotFound:
-			decoder = new(EACLNotFound)
+			decoder = new(ExtendedACLNotFound)
 		}
 	case session.LocalizeFailStatus(&code):
 		//nolint:exhaustive

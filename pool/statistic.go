@@ -94,14 +94,16 @@ func (n NodeStatistic) AverageDeleteContainer() time.Duration {
 	return n.averageTime(methodContainerDelete)
 }
 
-// AverageGetContainerEACL returns average time to perform ContainerEACL request.
-func (n NodeStatistic) AverageGetContainerEACL() time.Duration {
-	return n.averageTime(methodContainerEACL)
+// AverageGetContainerExtendedACL returns average time to perform
+// ContainerExtendedACL request.
+func (n NodeStatistic) AverageGetContainerExtendedACL() time.Duration {
+	return n.averageTime(methodContainerExtendedACL)
 }
 
-// AverageSetContainerEACL returns average time to perform ContainerSetEACL request.
-func (n NodeStatistic) AverageSetContainerEACL() time.Duration {
-	return n.averageTime(methodContainerSetEACL)
+// AverageSetContainerExtendedACL returns average time to perform
+// ContainerSetExtendedACL request.
+func (n NodeStatistic) AverageSetContainerExtendedACL() time.Duration {
+	return n.averageTime(methodContainerSetExtendedACL)
 }
 
 // AverageEndpointInfo returns average time to perform EndpointInfo request.

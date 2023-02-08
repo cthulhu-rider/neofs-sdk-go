@@ -1,6 +1,10 @@
 package acl
 
-import "strconv"
+import (
+	"strconv"
+
+	"github.com/nspcc-dev/neofs-api-go/v2/acl"
+)
 
 // Op enumerates operations under access control inside container.
 // Non-positive values are reserved and depend on context (e.g. unsupported op).
@@ -22,6 +26,10 @@ const (
 
 	opLast // extreme value for testing
 )
+
+func castOp(op Op) acl.Operation {
+	return acl.Operation(op)
+}
 
 // String implements fmt.Stringer.
 func (x Op) String() string {
@@ -63,6 +71,10 @@ const (
 
 	roleLast // extreme value for testing
 )
+
+func castRole(role Role) acl.Role {
+	return acl.Role(role)
+}
 
 // String implements fmt.Stringer.
 func (x Role) String() string {

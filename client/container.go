@@ -5,16 +5,17 @@ import (
 	"errors"
 	"fmt"
 
+	v2acl "github.com/nspcc-dev/neofs-api-go/v2/acl"
 	v2container "github.com/nspcc-dev/neofs-api-go/v2/container"
 	"github.com/nspcc-dev/neofs-api-go/v2/refs"
 	rpcapi "github.com/nspcc-dev/neofs-api-go/v2/rpc"
 	"github.com/nspcc-dev/neofs-api-go/v2/rpc/client"
 	v2session "github.com/nspcc-dev/neofs-api-go/v2/session"
 	"github.com/nspcc-dev/neofs-sdk-go/container"
+	"github.com/nspcc-dev/neofs-sdk-go/container/acl"
 	cid "github.com/nspcc-dev/neofs-sdk-go/container/id"
 	neofscrypto "github.com/nspcc-dev/neofs-sdk-go/crypto"
 	neofsecdsa "github.com/nspcc-dev/neofs-sdk-go/crypto/ecdsa"
-	"github.com/nspcc-dev/neofs-sdk-go/eacl"
 	"github.com/nspcc-dev/neofs-sdk-go/session"
 	"github.com/nspcc-dev/neofs-sdk-go/user"
 )
@@ -493,34 +494,34 @@ func (c *Client) ContainerDelete(ctx context.Context, prm PrmContainerDelete) (*
 	return &res, nil
 }
 
-// PrmContainerEACL groups parameters of ContainerEACL operation.
-type PrmContainerEACL struct {
+// PrmContainerExtendedACL groups parameters of ContainerExtendedACL operation.
+type PrmContainerExtendedACL struct {
 	prmCommonMeta
 
 	idSet bool
 	id    cid.ID
 }
 
-// SetContainer sets identifier of the NeoFS container to read the eACL table.
+// SetContainer sets identifier of the NeoFS container to read the extended ACL.
 // Required parameter.
-func (x *PrmContainerEACL) SetContainer(id cid.ID) {
+func (x *PrmContainerExtendedACL) SetContainer(id cid.ID) {
 	x.id = id
 	x.idSet = true
 }
 
-// ResContainerEACL groups resulting values of ContainerEACL operation.
-type ResContainerEACL struct {
+// ResContainerExtendedACL groups resulting values of ContainerExtendedACL operation.
+type ResContainerExtendedACL struct {
 	statusRes
 
-	table eacl.Table
+	eACL acl.Extended
 }
 
-// Table returns eACL table of the requested container.
-func (x ResContainerEACL) Table() eacl.Table {
-	return x.table
+// ExtendedACL returns acl.Extended of the requested container.
+func (x ResContainerExtendedACL) ExtendedACL() acl.Extended {
+	return x.eACL
 }
 
-// ContainerEACL reads eACL table of the NeoFS container.
+// ContainerExtendedACL reads extended ACL of the NeoFS container.
 //
 // Exactly one return value is non-nil. By default, server status is returned in res structure.
 // Any client's internal or transport errors are returned as `error`.
@@ -528,14 +529,14 @@ func (x ResContainerEACL) Table() eacl.Table {
 // NeoFS status codes are returned as `error`, otherwise, are included
 // in the returned result structure.
 //
-// Immediately panics if parameters are set incorrectly (see PrmContainerEACL docs).
+// Immediately panics if parameters are set incorrectly (see PrmContainerExtendedACL docs).
 // Context is required and must not be nil. It is used for network communication.
 //
 // Return statuses:
 //   - global (see Client docs);
 //   - *apistatus.ContainerNotFound;
-//   - *apistatus.EACLNotFound.
-func (c *Client) ContainerEACL(ctx context.Context, prm PrmContainerEACL) (*ResContainerEACL, error) {
+//   - *apistatus.ExtendedACLNotFound.
+func (c *Client) ContainerExtendedACL(ctx context.Context, prm PrmContainerExtendedACL) (*ResContainerExtendedACL, error) {
 	// check parameters
 	switch {
 	case ctx == nil:
@@ -560,7 +561,7 @@ func (c *Client) ContainerEACL(ctx context.Context, prm PrmContainerEACL) (*ResC
 
 	var (
 		cc  contextCall
-		res ResContainerEACL
+		res ResContainerExtendedACL
 	)
 
 	c.initCallContext(&cc)
@@ -573,13 +574,18 @@ func (c *Client) ContainerEACL(ctx context.Context, prm PrmContainerEACL) (*ResC
 	cc.result = func(r responseV2) {
 		resp := r.(*v2container.GetExtendedACLResponse)
 
+		const fieldEACL = "extended ACL"
+
 		eACL := resp.GetBody().GetEACL()
 		if eACL == nil {
-			cc.err = newErrMissingResponseField("eACL")
+			cc.err = newErrMissingResponseField(fieldEACL)
 			return
 		}
 
-		res.table = *eacl.NewTableFromV2(eACL)
+		cc.err = res.eACL.ReadFromV2(*eACL)
+		if cc.err != nil {
+			cc.err = newErrInvalidResponseField(fieldEACL, cc.err)
+		}
 	}
 
 	// process call
@@ -590,22 +596,23 @@ func (c *Client) ContainerEACL(ctx context.Context, prm PrmContainerEACL) (*ResC
 	return &res, nil
 }
 
-// PrmContainerSetEACL groups parameters of ContainerSetEACL operation.
-type PrmContainerSetEACL struct {
+// PrmContainerSetExtendedACL groups parameters of ContainerSetExtendedACL
+// operation.
+type PrmContainerSetExtendedACL struct {
 	prmCommonMeta
 
-	tableSet bool
-	table    eacl.Table
+	eACLSet bool
+	eACL    acl.Extended
 
 	sessionSet bool
 	session    session.Container
 }
 
-// SetTable sets eACL table structure to be set for the container.
+// SetExtendedACL sets acl.Extended to be set for the container.
 // Required parameter.
-func (x *PrmContainerSetEACL) SetTable(table eacl.Table) {
-	x.table = table
-	x.tableSet = true
+func (x *PrmContainerSetExtendedACL) SetExtendedACL(eACL acl.Extended) {
+	x.eACL = eACL
+	x.eACLSet = true
 }
 
 // WithinSession specifies session within which extended ACL of the container
@@ -617,19 +624,20 @@ func (x *PrmContainerSetEACL) SetTable(table eacl.Table) {
 // Session is optional, if set the following requirements apply:
 //   - if particular container is specified (ApplyOnlyTo), it MUST equal the container
 //     for which extended ACL is going to be set
-//   - session operation MUST be session.VerbContainerSetEACL (ForVerb)
+//   - session operation MUST be session.VerbContainerSetExtendedACL (ForVerb)
 //   - token MUST be signed using private key of the owner of the container to be saved
-func (x *PrmContainerSetEACL) WithinSession(s session.Container) {
+func (x *PrmContainerSetExtendedACL) WithinSession(s session.Container) {
 	x.session = s
 	x.sessionSet = true
 }
 
-// ResContainerSetEACL groups resulting values of ContainerSetEACL operation.
-type ResContainerSetEACL struct {
+// ResContainerSetExtendedACL groups resulting values of ContainerSetExtendedACL
+// operation.
+type ResContainerSetExtendedACL struct {
 	statusRes
 }
 
-// ContainerSetEACL sends request to update eACL table of the NeoFS container.
+// ContainerSetExtendedACL sends request to update extended ACL of the NeoFS container.
 //
 // Exactly one return value is non-nil. By default, server status is returned in res structure.
 // Any client's internal or transport errors are returned as `error`.
@@ -640,24 +648,25 @@ type ResContainerSetEACL struct {
 // Operation is asynchronous and no guaranteed even in the absence of errors.
 // The required time is also not predictable.
 //
-// Success can be verified by reading by identifier (see EACL).
+// Success can be verified by reading by identifier (see ContainerExtendedACL).
 //
-// Immediately panics if parameters are set incorrectly (see PrmContainerSetEACL docs).
+// Immediately panics if parameters are set incorrectly (see PrmContainerSetExtendedACL docs).
 // Context is required and must not be nil. It is used for network communication.
 //
 // Return statuses:
 //   - global (see Client docs).
-func (c *Client) ContainerSetEACL(ctx context.Context, prm PrmContainerSetEACL) (*ResContainerSetEACL, error) {
+func (c *Client) ContainerSetExtendedACL(ctx context.Context, prm PrmContainerSetExtendedACL) (*ResContainerSetExtendedACL, error) {
 	// check parameters
 	switch {
 	case ctx == nil:
 		panic(panicMsgMissingContext)
-	case !prm.tableSet:
-		panic("eACL table not set")
+	case !prm.eACLSet:
+		panic("extended ACL not set")
 	}
 
-	// sign the eACL table
-	eaclV2 := prm.table.ToV2()
+	// sign the extended ACL
+	var eaclV2 v2acl.Table
+	prm.eACL.WriteToV2(&eaclV2)
 
 	var sig neofscrypto.Signature
 
@@ -672,7 +681,7 @@ func (c *Client) ContainerSetEACL(ctx context.Context, prm PrmContainerSetEACL) 
 
 	// form request body
 	reqBody := new(v2container.SetExtendedACLRequestBody)
-	reqBody.SetEACL(eaclV2)
+	reqBody.SetEACL(&eaclV2)
 	reqBody.SetSignature(&sigv2)
 
 	// form meta header
@@ -696,7 +705,7 @@ func (c *Client) ContainerSetEACL(ctx context.Context, prm PrmContainerSetEACL) 
 
 	var (
 		cc  contextCall
-		res ResContainerSetEACL
+		res ResContainerSetExtendedACL
 	)
 
 	c.initCallContext(&cc)

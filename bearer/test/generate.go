@@ -2,7 +2,7 @@ package bearertest
 
 import (
 	"github.com/nspcc-dev/neofs-sdk-go/bearer"
-	eacltest "github.com/nspcc-dev/neofs-sdk-go/eacl/test"
+	containertest "github.com/nspcc-dev/neofs-sdk-go/container/test"
 	usertest "github.com/nspcc-dev/neofs-sdk-go/user/test"
 )
 
@@ -14,7 +14,7 @@ func Token() (t bearer.Token) {
 	t.SetNbf(2)
 	t.SetIat(1)
 	t.ForUser(*usertest.ID())
-	t.SetEACLTable(*eacltest.Table())
+	t.SetExtendedACL(containertest.ExtendedACL())
 
 	return t
 }

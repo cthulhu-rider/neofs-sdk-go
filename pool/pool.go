@@ -20,9 +20,9 @@ import (
 	sdkClient "github.com/nspcc-dev/neofs-sdk-go/client"
 	apistatus "github.com/nspcc-dev/neofs-sdk-go/client/status"
 	"github.com/nspcc-dev/neofs-sdk-go/container"
+	"github.com/nspcc-dev/neofs-sdk-go/container/acl"
 	cid "github.com/nspcc-dev/neofs-sdk-go/container/id"
 	neofsecdsa "github.com/nspcc-dev/neofs-sdk-go/crypto/ecdsa"
-	"github.com/nspcc-dev/neofs-sdk-go/eacl"
 	"github.com/nspcc-dev/neofs-sdk-go/netmap"
 	"github.com/nspcc-dev/neofs-sdk-go/object"
 	oid "github.com/nspcc-dev/neofs-sdk-go/object/id"
@@ -47,10 +47,10 @@ type client interface {
 	containerList(context.Context, PrmContainerList) ([]cid.ID, error)
 	// see clientWrapper.containerDelete.
 	containerDelete(context.Context, PrmContainerDelete) error
-	// see clientWrapper.containerEACL.
-	containerEACL(context.Context, PrmContainerEACL) (eacl.Table, error)
-	// see clientWrapper.containerSetEACL.
-	containerSetEACL(context.Context, PrmContainerSetEACL) error
+	// see clientWrapper.containerExtendedACL.
+	containerExtendedACL(context.Context, PrmContainerExtendedACL) (acl.Extended, error)
+	// see clientWrapper.containerSetExtendedACL.
+	containerSetExtendedACL(context.Context, PrmContainerSetExtendedACL) error
 	// see clientWrapper.endpointInfo.
 	endpointInfo(context.Context, prmEndpointInfo) (netmap.NodeInfo, error)
 	// see clientWrapper.networkInfo.
@@ -133,8 +133,8 @@ const (
 	methodContainerGet
 	methodContainerList
 	methodContainerDelete
-	methodContainerEACL
-	methodContainerSetEACL
+	methodContainerExtendedACL
+	methodContainerSetExtendedACL
 	methodEndpointInfo
 	methodNetworkInfo
 	methodObjectPut
@@ -159,10 +159,10 @@ func (m MethodIndex) String() string {
 		return "containerList"
 	case methodContainerDelete:
 		return "containerDelete"
-	case methodContainerEACL:
-		return "containerEACL"
-	case methodContainerSetEACL:
-		return "containerSetEACL"
+	case methodContainerExtendedACL:
+		return "containerExtendedACL"
+	case methodContainerSetExtendedACL:
+		return "containerSetExtendedACL"
 	case methodEndpointInfo:
 		return "endpointInfo"
 	case methodNetworkInfo:
@@ -496,54 +496,54 @@ func (c *clientWrapper) containerDelete(ctx context.Context, prm PrmContainerDel
 	return waitForContainerRemoved(ctx, c, &prm.cnrID, &prm.waitParams)
 }
 
-// containerEACL invokes sdkClient.ContainerEACL parse response status to error and return result as is.
-func (c *clientWrapper) containerEACL(ctx context.Context, prm PrmContainerEACL) (eacl.Table, error) {
+// invokes sdkClient.ContainerExtendedACL parse response status to error and return result as is.
+func (c *clientWrapper) containerExtendedACL(ctx context.Context, prm PrmContainerExtendedACL) (acl.Extended, error) {
 	cl, err := c.getClient()
 	if err != nil {
-		return eacl.Table{}, err
+		return acl.Extended{}, err
 	}
 
-	var cliPrm sdkClient.PrmContainerEACL
+	var cliPrm sdkClient.PrmContainerExtendedACL
 	cliPrm.SetContainer(prm.cnrID)
 
 	start := time.Now()
-	res, err := cl.ContainerEACL(ctx, cliPrm)
-	c.incRequests(time.Since(start), methodContainerEACL)
+	res, err := cl.ContainerExtendedACL(ctx, cliPrm)
+	c.incRequests(time.Since(start), methodContainerExtendedACL)
 	var st apistatus.Status
 	if res != nil {
 		st = res.Status()
 	}
 	if err = c.handleError(st, err); err != nil {
-		return eacl.Table{}, fmt.Errorf("get eacl on client: %w", err)
+		return acl.Extended{}, fmt.Errorf("get extended ACL on client: %w", err)
 	}
 
-	return res.Table(), nil
+	return res.ExtendedACL(), nil
 }
 
-// containerSetEACL invokes sdkClient.ContainerSetEACL parse response status to error.
-// It also waits for the EACL to appear on the network.
-func (c *clientWrapper) containerSetEACL(ctx context.Context, prm PrmContainerSetEACL) error {
+// invokes sdkClient.ContainerSetExtendedACL parse response status to error.
+// It also waits for the extended ACL to appear on the network.
+func (c *clientWrapper) containerSetExtendedACL(ctx context.Context, prm PrmContainerSetExtendedACL) error {
 	cl, err := c.getClient()
 	if err != nil {
 		return err
 	}
 
-	var cliPrm sdkClient.PrmContainerSetEACL
-	cliPrm.SetTable(prm.table)
+	var cliPrm sdkClient.PrmContainerSetExtendedACL
+	cliPrm.SetExtendedACL(prm.eACL)
 
 	if prm.sessionSet {
 		cliPrm.WithinSession(prm.session)
 	}
 
 	start := time.Now()
-	res, err := cl.ContainerSetEACL(ctx, cliPrm)
-	c.incRequests(time.Since(start), methodContainerSetEACL)
+	res, err := cl.ContainerSetExtendedACL(ctx, cliPrm)
+	c.incRequests(time.Since(start), methodContainerSetExtendedACL)
 	var st apistatus.Status
 	if res != nil {
 		st = res.Status()
 	}
 	if err = c.handleError(st, err); err != nil {
-		return fmt.Errorf("set eacl on client: %w", err)
+		return fmt.Errorf("set extended ACL on client: %w", err)
 	}
 
 	if !prm.waitParamsSet {
@@ -551,13 +551,13 @@ func (c *clientWrapper) containerSetEACL(ctx context.Context, prm PrmContainerSe
 	}
 
 	var cIDp *cid.ID
-	if cID, set := prm.table.CID(); set {
+	if cID, set := prm.eACL.Container(); set {
 		cIDp = &cID
 	}
 
-	err = waitForEACLPresence(ctx, c, cIDp, &prm.table, &prm.waitParams)
+	err = waitForExtendedACLPresence(ctx, c, cIDp, &prm.eACL, &prm.waitParams)
 	if err = c.handleError(nil, err); err != nil {
-		return fmt.Errorf("wait eacl presence on client: %w", err)
+		return fmt.Errorf("wait extended ACL presence on client: %w", err)
 	}
 
 	return nil
@@ -1422,19 +1422,20 @@ func (x *PrmContainerDelete) SetWaitParams(waitParams WaitParams) {
 	x.waitParamsSet = true
 }
 
-// PrmContainerEACL groups parameters of GetEACL operation.
-type PrmContainerEACL struct {
+// PrmContainerExtendedACL groups parameters of GetExtendedACL operation.
+type PrmContainerExtendedACL struct {
 	cnrID cid.ID
 }
 
-// SetContainerID specifies identifier of the NeoFS container to read the eACL table.
-func (x *PrmContainerEACL) SetContainerID(cnrID cid.ID) {
+// SetContainerID specifies identifier of the NeoFS container to read the
+// extended ACL.
+func (x *PrmContainerExtendedACL) SetContainerID(cnrID cid.ID) {
 	x.cnrID = cnrID
 }
 
-// PrmContainerSetEACL groups parameters of SetEACL operation.
-type PrmContainerSetEACL struct {
-	table eacl.Table
+// PrmContainerSetExtendedACL groups parameters of SetExtendedACL operation.
+type PrmContainerSetExtendedACL struct {
+	eACL acl.Extended
 
 	sessionSet bool
 	session    session.Container
@@ -1443,19 +1444,19 @@ type PrmContainerSetEACL struct {
 	waitParamsSet bool
 }
 
-// SetTable sets structure of container's extended ACL to be used as a
+// SetExtendedACL sets structure of container's extended ACL to be used as a
 // parameter of the base client's operation.
 //
-// See github.com/nspcc-dev/neofs-sdk-go/client.PrmContainerSetEACL.SetTable.
-func (x *PrmContainerSetEACL) SetTable(table eacl.Table) {
-	x.table = table
+// See github.com/nspcc-dev/neofs-sdk-go/client.PrmContainerSetExtendedACL.SetExtendedACL.
+func (x *PrmContainerSetExtendedACL) SetExtendedACL(eACL acl.Extended) {
+	x.eACL = eACL
 }
 
 // WithinSession specifies session to be used as a parameter of the base
 // client's operation.
 //
-// See github.com/nspcc-dev/neofs-sdk-go/client.PrmContainerSetEACL.WithinSession.
-func (x *PrmContainerSetEACL) WithinSession(s session.Container) {
+// See github.com/nspcc-dev/neofs-sdk-go/client.PrmContainerSetExtendedACL.WithinSession.
+func (x *PrmContainerSetExtendedACL) WithinSession(s session.Container) {
 	x.session = s
 	x.sessionSet = true
 }
@@ -1463,7 +1464,7 @@ func (x *PrmContainerSetEACL) WithinSession(s session.Container) {
 // SetWaitParams specifies timeout params to complete operation.
 // If not provided the default one will be used.
 // Panics if any of the wait params isn't positive.
-func (x *PrmContainerSetEACL) SetWaitParams(waitParams WaitParams) {
+func (x *PrmContainerSetExtendedACL) SetWaitParams(waitParams WaitParams) {
 	waitParams.checkForPositive()
 	x.waitParams = waitParams
 	x.waitParamsSet = true
@@ -2367,33 +2368,34 @@ func (p *Pool) DeleteContainer(ctx context.Context, prm PrmContainerDelete) erro
 	return cp.containerDelete(ctx, prm)
 }
 
-// GetEACL reads eACL table of the NeoFS container.
+// GetExtendedACL reads extended ACL of the NeoFS container.
 //
 // Main return value MUST NOT be processed on an erroneous return.
-func (p *Pool) GetEACL(ctx context.Context, prm PrmContainerEACL) (eacl.Table, error) {
+func (p *Pool) GetExtendedACL(ctx context.Context, prm PrmContainerExtendedACL) (acl.Extended, error) {
 	cp, err := p.connection()
 	if err != nil {
-		return eacl.Table{}, err
+		return acl.Extended{}, err
 	}
 
-	return cp.containerEACL(ctx, prm)
+	return cp.containerExtendedACL(ctx, prm)
 }
 
-// SetEACL sends request to update eACL table of the NeoFS container and waits for the operation to complete.
+// SetExtendedACL sends request to update extended ACL of the NeoFS container
+// and waits for the operation to complete.
 //
 // Waiting parameters can be specified using SetWaitParams. If not called, defaults are used:
 //
 //	polling interval: 5s
 //	waiting timeout: 120s
 //
-// Success can be verified by reading by identifier (see GetEACL).
-func (p *Pool) SetEACL(ctx context.Context, prm PrmContainerSetEACL) error {
+// Success can be verified by reading by identifier (see GetExtendedACL).
+func (p *Pool) SetExtendedACL(ctx context.Context, prm PrmContainerSetExtendedACL) error {
 	cp, err := p.connection()
 	if err != nil {
 		return err
 	}
 
-	return cp.containerSetEACL(ctx, prm)
+	return cp.containerSetExtendedACL(ctx, prm)
 }
 
 // Balance requests current balance of the NeoFS account.
@@ -2440,17 +2442,19 @@ func waitForContainerPresence(ctx context.Context, cli client, cnrID cid.ID, wai
 	})
 }
 
-// waitForEACLPresence waits until the container eacl is applied on the NeoFS network.
-func waitForEACLPresence(ctx context.Context, cli client, cnrID *cid.ID, table *eacl.Table, waitParams *WaitParams) error {
-	var prm PrmContainerEACL
+// waits until the container extended ACL is applied on the NeoFS network.
+func waitForExtendedACLPresence(ctx context.Context, cli client, cnrID *cid.ID, eACL *acl.Extended, waitParams *WaitParams) error {
+	var prm PrmContainerExtendedACL
 	if cnrID != nil {
 		prm.SetContainerID(*cnrID)
 	}
 
+	bExpected := eACL.Marshal()
+
 	return waitFor(ctx, waitParams, func(ctx context.Context) bool {
-		eaclTable, err := cli.containerEACL(ctx, prm)
+		eACL, err := cli.containerExtendedACL(ctx, prm)
 		if err == nil {
-			return eacl.EqualTables(*table, eaclTable)
+			return bytes.Equal(eACL.Marshal(), bExpected)
 		}
 		return false
 	})

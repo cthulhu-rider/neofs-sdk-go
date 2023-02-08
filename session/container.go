@@ -172,9 +172,9 @@ type ContainerVerb int8
 const (
 	_ ContainerVerb = iota
 
-	VerbContainerPut     // Put rpc
-	VerbContainerDelete  // Delete rpc
-	VerbContainerSetEACL // SetExtendedACL rpc
+	VerbContainerPut            // Put rpc
+	VerbContainerDelete         // Delete rpc
+	VerbContainerSetExtendedACL // SetExtendedACL rpc
 )
 
 // ForVerb specifies the container operation of the session scope. Each

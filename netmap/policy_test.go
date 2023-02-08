@@ -1,6 +1,8 @@
 package netmap_test
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -66,4 +68,14 @@ func TestPlacementPolicyEncoding(t *testing.T) {
 
 		require.Equal(t, v, v2)
 	})
+}
+
+func TestIk(t *testing.T) {
+	var p PlacementPolicy
+	require.NoError(t, p.DecodeString("REP 3"))
+
+	j, err := json.MarshalIndent(p, "", " ")
+	require.NoError(t, err)
+
+	fmt.Println(string(j))
 }

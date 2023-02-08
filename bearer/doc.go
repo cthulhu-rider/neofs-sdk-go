@@ -12,7 +12,7 @@ the user that will attach token to its requests.
 	bearerToken.SetExpiration(500)
 	bearerToken.SetIssuedAt(10)
 	bearerToken.SetNotBefore(10)
-	bearerToken.SetEACL(eaclTable)
+	bearerToken.SetExtendedACL(eACL)
 	bearerToken.SetOwner(ownerID)
 
 Bearer token must be signed by owner of the container.

@@ -42,19 +42,18 @@ func (x ContainerNotFound) ToStatusV2() *status.Status {
 	return &x.v2
 }
 
-// EACLNotFound describes status of the failure because of the missing eACL
-// table.
-// Instances provide Status and StatusV2 interfaces.
-type EACLNotFound struct {
+// ExtendedACLNotFound describes status of the failure because of the missing
+// container's extended ACL . Instances provide Status and StatusV2 interfaces.
+type ExtendedACLNotFound struct {
 	v2 status.Status
 }
 
-const defaultEACLNotFoundMsg = "eACL not found"
+const defaultExtendedACLNotFoundMsg = "extended ACL not found"
 
-func (x EACLNotFound) Error() string {
+func (x ExtendedACLNotFound) Error() string {
 	msg := x.v2.Message()
 	if msg == "" {
-		msg = defaultEACLNotFoundMsg
+		msg = defaultExtendedACLNotFoundMsg
 	}
 
 	return errMessageStatusV2(
@@ -64,7 +63,7 @@ func (x EACLNotFound) Error() string {
 }
 
 // implements local interface defined in FromStatusV2 func.
-func (x *EACLNotFound) fromStatusV2(st *status.Status) {
+func (x *ExtendedACLNotFound) fromStatusV2(st *status.Status) {
 	x.v2 = *st
 }
 
@@ -72,10 +71,10 @@ func (x *EACLNotFound) fromStatusV2(st *status.Status) {
 // If the value was returned by FromStatusV2, returns the source message.
 // Otherwise, returns message with
 //   - code: EACL_NOT_FOUND;
-//   - string message: "eACL not found";
+//   - string message: "extended ACL not found";
 //   - details: empty.
-func (x EACLNotFound) ToStatusV2() *status.Status {
+func (x ExtendedACLNotFound) ToStatusV2() *status.Status {
 	x.v2.SetCode(globalizeCodeV2(container.StatusEACLNotFound, container.GlobalizeFail))
-	x.v2.SetMessage(defaultEACLNotFoundMsg)
+	x.v2.SetMessage(defaultExtendedACLNotFoundMsg)
 	return &x.v2
 }

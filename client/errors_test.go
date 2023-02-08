@@ -22,10 +22,10 @@ func TestErrors(t *testing.T) {
 			},
 		},
 		{
-			check: client.IsErrEACLNotFound,
+			check: client.IsErrExtendedACLNotFound,
 			errs: []error{
-				apistatus.EACLNotFound{},
-				new(apistatus.EACLNotFound),
+				apistatus.ExtendedACLNotFound{},
+				new(apistatus.ExtendedACLNotFound),
 			},
 		},
 		{

@@ -109,7 +109,7 @@ func TestToStatusV2(t *testing.T) {
 		},
 		{
 			status: (statusConstructor)(func() apistatus.Status {
-				return new(apistatus.EACLNotFound)
+				return new(apistatus.ExtendedACLNotFound)
 			}),
 			codeV2: 3073,
 		},
@@ -262,7 +262,7 @@ func TestFromStatusV2(t *testing.T) {
 		},
 		{
 			status: (statusConstructor)(func() apistatus.Status {
-				return new(apistatus.EACLNotFound)
+				return new(apistatus.ExtendedACLNotFound)
 			}),
 			codeV2: 3073,
 		},

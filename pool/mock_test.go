@@ -10,9 +10,9 @@ import (
 	"github.com/nspcc-dev/neofs-sdk-go/accounting"
 	apistatus "github.com/nspcc-dev/neofs-sdk-go/client/status"
 	"github.com/nspcc-dev/neofs-sdk-go/container"
+	"github.com/nspcc-dev/neofs-sdk-go/container/acl"
 	cid "github.com/nspcc-dev/neofs-sdk-go/container/id"
 	neofsecdsa "github.com/nspcc-dev/neofs-sdk-go/crypto/ecdsa"
-	"github.com/nspcc-dev/neofs-sdk-go/eacl"
 	"github.com/nspcc-dev/neofs-sdk-go/netmap"
 	"github.com/nspcc-dev/neofs-sdk-go/object"
 	oid "github.com/nspcc-dev/neofs-sdk-go/object/id"
@@ -93,11 +93,11 @@ func (m *mockClient) containerDelete(context.Context, PrmContainerDelete) error 
 	return nil
 }
 
-func (m *mockClient) containerEACL(context.Context, PrmContainerEACL) (eacl.Table, error) {
-	return eacl.Table{}, nil
+func (m *mockClient) containerExtendedACL(context.Context, PrmContainerExtendedACL) (acl.Extended, error) {
+	return acl.Extended{}, nil
 }
 
-func (m *mockClient) containerSetEACL(context.Context, PrmContainerSetEACL) error {
+func (m *mockClient) containerSetExtendedACL(context.Context, PrmContainerSetExtendedACL) error {
 	return nil
 }
 

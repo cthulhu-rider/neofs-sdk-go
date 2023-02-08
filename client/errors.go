@@ -29,15 +29,15 @@ func IsErrContainerNotFound(err error) bool {
 	}
 }
 
-// IsErrEACLNotFound checks if err corresponds to NeoFS status
-// return corresponding to missing eACL table. Supports wrapped errors.
-func IsErrEACLNotFound(err error) bool {
+// IsErrExtendedACLNotFound checks if err corresponds to NeoFS status return
+// corresponding to missing container's extended ACL. Supports wrapped errors.
+func IsErrExtendedACLNotFound(err error) bool {
 	switch unwrapErr(err).(type) {
 	default:
 		return false
 	case
-		apistatus.EACLNotFound,
-		*apistatus.EACLNotFound:
+		apistatus.ExtendedACLNotFound,
+		*apistatus.ExtendedACLNotFound:
 		return true
 	}
 }
